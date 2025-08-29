@@ -11,7 +11,10 @@
       "Bash(go mod:*)",
       "Bash(go build:*)",
       "Bash(docker system prune:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
     ],
     "deny": [],
     "ask": []
