@@ -438,7 +438,7 @@ func (h *Handlers) MigrateMinIO(c *fiber.Ctx) error {
 		}
 		
 		// Download from source
-		data, err := sourceMinio.DownloadFile(fileName)
+		data, err := sourceMinio.DownloadFileData(fileName)
 		if err != nil {
 			errors = append(errors, fmt.Sprintf("Failed to download %s: %v", fileName, err))
 			continue

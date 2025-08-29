@@ -397,8 +397,8 @@ func (s *MinIOService) CreateTempConnection(endpoint, accessKey, secretKey strin
 	}, nil
 }
 
-// DownloadFile downloads a file from MinIO and returns the data
-func (s *MinIOService) DownloadFile(filename string) ([]byte, error) {
+// DownloadFileData downloads a file from MinIO and returns the data as bytes
+func (s *MinIOService) DownloadFileData(filename string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	
