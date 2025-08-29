@@ -7,8 +7,6 @@ COPY frontend/package*.json ./
 RUN npm ci
 
 COPY frontend/ ./
-# Explicitly ensure lib directory exists
-RUN ls -la . && echo "Contents:" && find . -name "lib" -type d && echo "Lib contents:" && ls -la lib/ || echo "No lib dir found"
 RUN npm run build
 
 # Go backend stage

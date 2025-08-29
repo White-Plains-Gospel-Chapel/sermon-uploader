@@ -275,7 +275,7 @@ jobs:
   notify:
     needs: [build-and-push, deploy-to-pi]
     runs-on: ubuntu-latest
-    if: always()
+    if: false  # DISABLED - Discord only
     
     steps:
       - name: Notify Discord
