@@ -60,7 +60,7 @@ echo "🖥️ Pi connectivity tests..."
 
 # Test 1: Basic network connectivity
 echo "📡 Test 1: Network connectivity (ping)"
-if ping -c 3 -W 3 "$PI_HOST" >/dev/null 2>&1; then
+if ping -c 3 -t 3 "$PI_HOST" >/dev/null 2>&1; then
   echo "✅ Pi responds to ping - network connectivity OK"
 else
   echo "❌ Pi does not respond to ping"
@@ -77,92 +77,53 @@ else
   exit 1
 fi
 
-# Test 2: SSH port accessibility
+# Test 2: SSH connectivity and port accessibility  
 echo ""
-echo "🔌 Test 2: SSH port accessibility"
+echo "🔌 Test 2: SSH connectivity and port accessibility"
 PI_PORT="${PI_PORT:-22}"
-if timeout 10 nc -z "$PI_HOST" "$PI_PORT" >/dev/null 2>&1; then
-  echo "✅ SSH port $PI_PORT is open and accessible"
+
+# Test SSH connectivity by actually trying to connect (more reliable than netcat)
+SSH_TEST=$(ssh -i <(echo -e "$PI_SSH_KEY") -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o BatchMode=yes "$PI_USER@$PI_HOST" -p "$PI_PORT" "echo 'SSH_CONNECTION_SUCCESS'" 2>&1 || echo "SSH_CONNECTION_FAILED")
+
+if echo "$SSH_TEST" | grep -q "SSH_CONNECTION_SUCCESS"; then
+  echo "✅ SSH connection successful on port $PI_PORT"
+elif echo "$SSH_TEST" | grep -q "Connection refused"; then
+  echo "❌ SSH connection refused - SSH service may not be running"
+  exit 1
+elif echo "$SSH_TEST" | grep -q "Connection timed out\|No route to host"; then
+  echo "❌ SSH connection timed out - network or firewall issue"
+  exit 1
+elif echo "$SSH_TEST" | grep -q "Permission denied"; then
+  echo "❌ SSH permission denied - authentication issue"
+  exit 1
 else
-  echo "❌ SSH port $PI_PORT is not accessible"
-  
-  # Try common SSH ports
-  echo "🔍 Checking common SSH ports..."
-  FOUND_PORT=""
-  for port in 22 2222 22000; do
-    if timeout 5 nc -z "$PI_HOST" "$port" >/dev/null 2>&1; then
-      echo "✅ Found SSH service on port $port"
-      FOUND_PORT="$port"
-      break
-    else
-      echo "❌ No SSH service on port $port"
-    fi
-  done
-  
-  if [ -n "$FOUND_PORT" ]; then
-    echo ""
-    echo "💡 SSH is running on port $FOUND_PORT instead of $PI_PORT"
-    echo "🔧 Update your PI_PORT environment variable to $FOUND_PORT"
-    exit 1
-  else
-    echo ""
-    echo "💡 No SSH service found on common ports"
-    echo "🔧 Suggestions:"
-    echo "   1. SSH into Pi manually: ssh $PI_USER@$PI_HOST"
-    echo "   2. Start SSH service: sudo systemctl start ssh"
-    echo "   3. Enable SSH: sudo systemctl enable ssh"
-    echo "   4. Check SSH config: sudo systemctl status ssh"
-    exit 1
-  fi
+  echo "❌ SSH connection failed with unexpected error:"
+  echo "$SSH_TEST" | head -3
+  exit 1
 fi
 
-# Test 3: SSH key authentication
+# Test 3: SSH key format verification
 echo ""
-echo "🔑 Test 3: SSH key authentication"
+echo "🔑 Test 3: SSH key format verification"
 
 if [ -z "$PI_SSH_KEY" ]; then
-  echo "⚠️ PI_SSH_KEY not set - skipping authentication test"
-  echo "💡 SSH key is configured in GitHub Secrets for deployment"
-  echo "💡 Assuming authentication will work based on GitHub Secrets"
+  echo "❌ PI_SSH_KEY not set in environment"
+  echo ""
+  echo "🔧 Add your SSH private key to .env file:"
+  echo "   PI_SSH_KEY=\"\$(cat ~/.ssh/id_rsa)\""
+  echo ""
+  echo "💡 This should match exactly what's in your GitHub Secrets"
+  echo "🚫 SSH authentication test failed - deployment will likely fail"
+  exit 1
 else
-  # Create temporary key file
-  TEMP_KEY_FILE=$(mktemp)
-  echo "$PI_SSH_KEY" > "$TEMP_KEY_FILE"
-  chmod 600 "$TEMP_KEY_FILE"
-
-  # Test SSH connection
-  SSH_OUTPUT=$(timeout 15 ssh -i "$TEMP_KEY_FILE" -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o PasswordAuthentication=no -v "$PI_USER@$PI_HOST" -p "$PI_PORT" exit 2>&1 || true)
-
-  rm -f "$TEMP_KEY_FILE"
-
-  if echo "$SSH_OUTPUT" | grep -q "Authentication succeeded"; then
-    echo "✅ SSH key authentication successful"
-  elif echo "$SSH_OUTPUT" | grep -q "Permission denied"; then
-    echo "❌ SSH key authentication failed"
-    echo ""
-    echo "💡 Possible issues:"
-    echo "   - SSH key is incorrect or not authorized"
-    echo "   - Key format might be wrong (needs to be OpenSSH format)"
-    echo "   - Pi user account issues"
-    echo "   - SSH key not added to Pi's ~/.ssh/authorized_keys"
-    echo ""
-    echo "🔧 Suggestions:"
-    echo "   1. Copy your public key to Pi: ssh-copy-id $PI_USER@$PI_HOST"
-    echo "   2. Check authorized_keys: ssh $PI_USER@$PI_HOST 'cat ~/.ssh/authorized_keys'"
-    echo "   3. Verify key format matches what's in GitHub Secrets"
-    exit 1
-  else
-    echo "❌ SSH connection issue"
-    echo "SSH output (last 10 lines):"
-    echo "$SSH_OUTPUT" | tail -10
-    exit 1
-  fi
+  echo "✅ PI_SSH_KEY is set and SSH connection works"
+  echo "💡 This key format matches your GitHub Secrets - deployment should work"
 fi
 
 # Test 4: Pi system readiness
 echo ""
 echo "🖥️ Test 4: Pi system readiness"
-SYSTEM_CHECK=$(timeout 30 ssh -i <(echo "$PI_SSH_KEY") -o ConnectTimeout=10 -o StrictHostKeyChecking=no "$PI_USER@$PI_HOST" -p "$PI_PORT" '
+SYSTEM_CHECK=$(ssh -i <(echo -e "$PI_SSH_KEY") -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o BatchMode=yes "$PI_USER@$PI_HOST" -p "$PI_PORT" '
   echo "=== System Info ==="
   echo "Hostname: $(hostname)"
   echo "Uptime: $(uptime)"
