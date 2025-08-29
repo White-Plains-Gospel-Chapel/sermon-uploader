@@ -7,8 +7,6 @@ COPY frontend/package*.json ./
 RUN npm ci
 
 COPY frontend/. ./
-RUN ls -la lib/ || echo "lib directory not found"
-RUN cat lib/utils.ts || echo "utils.ts not found"
 RUN npm run build
 
 # Go backend stage
