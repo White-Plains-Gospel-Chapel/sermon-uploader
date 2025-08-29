@@ -21,7 +21,7 @@ func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Println("No .env file found, using environment variables")
 	}
-	
+
 	// Load Eastern Time zone for consistent logging
 	easternTZ, err := time.LoadLocation("America/New_York")
 	if err != nil {
@@ -89,23 +89,23 @@ func main() {
 		api.Get("/dashboard", h.GetDashboard)
 		api.Post("/upload", h.UploadFiles)
 		api.Get("/files", h.ListFiles)
-		
+
 		// Direct upload routes (better for large files)
 		api.Post("/upload/presigned", h.GetPresignedURL)
 		api.Post("/upload/presigned-batch", h.GetPresignedURLsBatch)
 		api.Post("/upload/complete", h.ProcessUploadedFile)
 		api.Post("/check-duplicate", h.CheckDuplicate)
-		
+
 		// Keep existing upload methods - chunking handled on frontend
 		// Chunked uploads use the same presigned URL system
-		
+
 		// Test endpoints
 		api.Post("/test/discord", h.TestDiscord)
 		api.Get("/test/minio", h.TestMinIO)
-		
+
 		// Migration endpoint
 		api.Post("/migrate/minio", h.MigrateMinIO)
-		
+
 		// Dangerous operations (require confirmation)
 		api.Delete("/bucket/clear", h.ClearBucket)
 	}
@@ -147,7 +147,7 @@ func main() {
 	timestamp := easternTime.Format("2006/01/02 15:04:05 MST")
 	log.Printf("[%s] 🚀 Server starting on port %s", timestamp, port)
 	log.Printf("[%s] 🌐 Access at http://your-pi-ip:%s", timestamp, port)
-	
+
 	if err := app.Listen(":" + port); err != nil {
 		log.Fatal("Failed to start server:", err)
 	}

@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
-	
+
 	"sermon-uploader/services"
 )
 
@@ -61,12 +61,12 @@ func (h *Handlers) GetPresignedURL(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"success":      true,
-		"isDuplicate":  false,
-		"uploadUrl":    presignedURL,
-		"filename":     req.Filename,
-		"fileSize":     req.FileSize,
-		"expires":      time.Now().Add(time.Hour).Unix(),
+		"success":     true,
+		"isDuplicate": false,
+		"uploadUrl":   presignedURL,
+		"filename":    req.Filename,
+		"fileSize":    req.FileSize,
+		"expires":     time.Now().Add(time.Hour).Unix(),
 	})
 }
 
@@ -114,12 +114,12 @@ func (h *Handlers) ProcessUploadedFile(c *fiber.Ctx) error {
 	go func() {
 		startTime := time.Now()
 		logWithEasternTime("🔍 Starting background metadata processing for %s", req.Filename)
-		
+
 		metadataService := h.fileService.GetMetadataService()
 		fullMetadata, err := metadataService.ExtractMetadataFromMinIO(h.minioService, req.Filename)
-		
+
 		processingDuration := time.Since(startTime)
-		
+
 		if err != nil {
 			logWithEasternTime("Background metadata extraction failed for %s after %v: %v", req.Filename, processingDuration, err)
 			return
@@ -156,7 +156,7 @@ func (h *Handlers) GetPresignedURLsBatch(c *fiber.Ctx) error {
 		Filename string `json:"filename"`
 		FileSize int64  `json:"fileSize"`
 	}
-	
+
 	type BatchRequest struct {
 		Files []FileRequest `json:"files"`
 	}
@@ -190,7 +190,7 @@ func (h *Handlers) GetPresignedURLsBatch(c *fiber.Ctx) error {
 
 	for _, fileReq := range req.Files {
 		fileResult := make(map[string]interface{})
-		
+
 		// Check for duplicates first
 		isDuplicate, err := h.minioService.CheckDuplicateByFilename(fileReq.Filename)
 		if err != nil {
@@ -220,18 +220,18 @@ func (h *Handlers) GetPresignedURLsBatch(c *fiber.Ctx) error {
 				successCount++
 			}
 		}
-		
+
 		results[fileReq.Filename] = fileResult
 	}
 
 	return c.JSON(fiber.Map{
-		"success":        errorCount == 0,
-		"total_files":    len(req.Files),
-		"success_count":  successCount,
+		"success":         errorCount == 0,
+		"total_files":     len(req.Files),
+		"success_count":   successCount,
 		"duplicate_count": duplicateCount,
-		"error_count":    errorCount,
-		"results":        results,
-		"message":        fmt.Sprintf("Processed %d files: %d ready for upload, %d duplicates, %d errors", 
+		"error_count":     errorCount,
+		"results":         results,
+		"message": fmt.Sprintf("Processed %d files: %d ready for upload, %d duplicates, %d errors",
 			len(req.Files), successCount, duplicateCount, errorCount),
 	})
 }

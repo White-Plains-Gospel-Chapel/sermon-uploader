@@ -50,11 +50,11 @@ func (h *Handlers) HealthCheck(c *fiber.Ctx) error {
 func (h *Handlers) GetStatus(c *fiber.Ctx) error {
 	// Test MinIO connection
 	minioConnected := h.minioService.TestConnection() == nil
-	
+
 	// Check if bucket exists and get file count
 	var bucketExists bool
 	var fileCount int
-	
+
 	if minioConnected {
 		if err := h.minioService.EnsureBucketExists(); err == nil {
 			bucketExists = true
@@ -105,11 +105,11 @@ func (h *Handlers) TestMinIO(c *fiber.Ctx) error {
 	// Test connection
 	if err := h.minioService.TestConnection(); err != nil {
 		return c.Status(500).JSON(fiber.Map{
-			"success":   false,
-			"message":   "MinIO connection failed",
-			"error":     err.Error(),
-			"endpoint":  h.config.MinIOEndpoint,
-			"bucket":    h.config.MinioBucket,
+			"success":  false,
+			"message":  "MinIO connection failed",
+			"error":    err.Error(),
+			"endpoint": h.config.MinIOEndpoint,
+			"bucket":   h.config.MinioBucket,
 		})
 	}
 
@@ -128,9 +128,9 @@ func (h *Handlers) TestMinIO(c *fiber.Ctx) error {
 	fileCount, err := h.minioService.GetFileCount()
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{
-			"success":  false,
-			"message":  "Failed to count files in bucket",
-			"error":    err.Error(),
+			"success": false,
+			"message": "Failed to count files in bucket",
+			"error":   err.Error(),
 		})
 	}
 
@@ -250,7 +250,7 @@ func (h *Handlers) GetFileInfo(c *fiber.Ctx) error {
 func (h *Handlers) ClearBucket(c *fiber.Ctx) error {
 	// Optional: Add authentication/authorization check
 	// if !isAuthorized(c) { return c.Status(401).JSON(...) }
-	
+
 	// Optional: Require confirmation parameter
 	confirmParam := c.Query("confirm")
 	if confirmParam != "yes-delete-everything" {
@@ -263,7 +263,7 @@ func (h *Handlers) ClearBucket(c *fiber.Ctx) error {
 
 	// Get current file count for logging
 	fileCount, _ := h.minioService.GetFileCount()
-	
+
 	// Perform the deletion
 	result, err := h.minioService.ClearBucket()
 	if err != nil {
@@ -278,7 +278,7 @@ func (h *Handlers) ClearBucket(c *fiber.Ctx) error {
 	if h.discordService != nil {
 		h.discordService.SendNotification(
 			"🗑️ Bucket Cleared",
-			fmt.Sprintf("All files have been removed from the bucket.\n\n**Files deleted:** %d\n**Failed deletions:** %d", 
+			fmt.Sprintf("All files have been removed from the bucket.\n\n**Files deleted:** %d\n**Failed deletions:** %d",
 				result.DeletedCount, result.FailedCount),
 			0xff6b6b, // Red color
 			[]services.DiscordField{
@@ -307,12 +307,12 @@ func (h *Handlers) ClearBucket(c *fiber.Ctx) error {
 func (h *Handlers) GetDashboard(c *fiber.Ctx) error {
 	includeMetadata := c.Query("metadata", "false") == "true"
 	limit := c.QueryInt("limit", 10) // Default to 10 recent files
-	
+
 	// Get system status
 	minioConnected := h.minioService.TestConnection() == nil
 	var bucketExists bool
 	var fileCount int
-	
+
 	if minioConnected {
 		if err := h.minioService.EnsureBucketExists(); err == nil {
 			bucketExists = true
@@ -321,12 +321,12 @@ func (h *Handlers) GetDashboard(c *fiber.Ctx) error {
 			}
 		}
 	}
-	
+
 	// Get recent files
 	var files []interface{}
 	var totalSize int64
 	var lastUpload string
-	
+
 	if bucketExists {
 		allFiles, err := h.minioService.ListFiles()
 		if err == nil {
@@ -340,7 +340,7 @@ func (h *Handlers) GetDashboard(c *fiber.Ctx) error {
 						lastUpload = lastMod
 					}
 				}
-				
+
 				// Add to response (limit to requested count)
 				if i < limit {
 					files = append(files, fileData)
@@ -348,7 +348,7 @@ func (h *Handlers) GetDashboard(c *fiber.Ctx) error {
 			}
 		}
 	}
-	
+
 	// Build response
 	dashboard := map[string]interface{}{
 		"status": map[string]interface{}{
@@ -360,18 +360,18 @@ func (h *Handlers) GetDashboard(c *fiber.Ctx) error {
 		},
 		"files": files,
 		"summary": map[string]interface{}{
-			"total_files":     fileCount,
-			"total_size_mb":   float64(totalSize) / (1024 * 1024),
-			"last_upload":     lastUpload,
-			"files_shown":     len(files),
+			"total_files":   fileCount,
+			"total_size_mb": float64(totalSize) / (1024 * 1024),
+			"last_upload":   lastUpload,
+			"files_shown":   len(files),
 		},
 		"meta": map[string]interface{}{
-			"generated_at":     time.Now().Format(time.RFC3339),
+			"generated_at":      time.Now().Format(time.RFC3339),
 			"metadata_included": includeMetadata,
-			"file_limit":       limit,
+			"file_limit":        limit,
 		},
 	}
-	
+
 	return c.JSON(dashboard)
 }
 
@@ -379,41 +379,41 @@ func (h *Handlers) GetDashboard(c *fiber.Ctx) error {
 func (h *Handlers) MigrateMinIO(c *fiber.Ctx) error {
 	// Get migration parameters
 	sourceEndpoint := c.FormValue("source_endpoint")
-	sourceAccessKey := c.FormValue("source_access_key") 
+	sourceAccessKey := c.FormValue("source_access_key")
 	sourceSecretKey := c.FormValue("source_secret_key")
-	sourceBucket := c.FormValue("source_bucket", "sermons")
-	
+	// sourceBucket is implicitly the same as destination bucket
+
 	if sourceEndpoint == "" || sourceAccessKey == "" || sourceSecretKey == "" {
 		return c.Status(400).JSON(fiber.Map{
 			"success": false,
 			"message": "Missing required migration parameters",
 		})
 	}
-	
+
 	log.Printf("Starting MinIO migration from %s", sourceEndpoint)
-	
+
 	// Create temporary source MinIO service
 	sourceMinio, err := h.minioService.CreateTempConnection(sourceEndpoint, sourceAccessKey, sourceSecretKey)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{
 			"success": false,
 			"message": "Failed to connect to source MinIO",
-			"error": err.Error(),
+			"error":   err.Error(),
 		})
 	}
-	
+
 	// List all files in source bucket
 	files, err := sourceMinio.ListFiles()
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{
 			"success": false,
 			"message": "Failed to list files from source MinIO",
-			"error": err.Error(),
+			"error":   err.Error(),
 		})
 	}
-	
+
 	log.Printf("Found %d files to migrate", len(files))
-	
+
 	// Ensure destination bucket exists and migrate policies
 	if err := h.minioService.MigratePolicies(sourceMinio); err != nil {
 		log.Printf("Warning: Policy migration failed: %v", err)
@@ -422,52 +422,52 @@ func (h *Handlers) MigrateMinIO(c *fiber.Ctx) error {
 			return c.Status(500).JSON(fiber.Map{
 				"success": false,
 				"message": "Failed to create destination bucket",
-				"error": err.Error(),
+				"error":   err.Error(),
 			})
 		}
 	}
-	
+
 	// Migrate each file
 	migratedCount := 0
 	errors := []string{}
-	
+
 	for _, fileData := range files {
 		fileName, ok := fileData["name"].(string)
 		if !ok {
 			continue
 		}
-		
+
 		// Download from source
 		data, err := sourceMinio.DownloadFileData(fileName)
 		if err != nil {
 			errors = append(errors, fmt.Sprintf("Failed to download %s: %v", fileName, err))
 			continue
 		}
-		
+
 		// Upload to destination
-		_, err = h.minioService.UploadFile(fileName, data)
+		_, err = h.minioService.UploadFile(data, fileName)
 		if err != nil {
 			errors = append(errors, fmt.Sprintf("Failed to upload %s: %v", fileName, err))
 			continue
 		}
-		
+
 		migratedCount++
 		log.Printf("Migrated file %d/%d: %s", migratedCount, len(files), fileName)
 	}
-	
+
 	log.Printf("Migration completed: %d files migrated, %d errors", migratedCount, len(errors))
-	
+
 	response := fiber.Map{
-		"success": true,
-		"message": fmt.Sprintf("Migration completed: %d files migrated", migratedCount),
+		"success":        true,
+		"message":        fmt.Sprintf("Migration completed: %d files migrated", migratedCount),
 		"migrated_count": migratedCount,
-		"total_files": len(files),
+		"total_files":    len(files),
 	}
-	
+
 	if len(errors) > 0 {
 		response["errors"] = errors
 		response["error_count"] = len(errors)
 	}
-	
+
 	return c.JSON(response)
 }

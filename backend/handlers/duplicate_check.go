@@ -30,7 +30,7 @@ func (h *Handlers) CheckDuplicate(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"filename":    req.Filename,
 		"isDuplicate": isDuplicate,
-		"message":     func() string {
+		"message": func() string {
 			if isDuplicate {
 				return "File already exists"
 			}

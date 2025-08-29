@@ -130,11 +130,11 @@ func (d *DiscordService) SendUploadComplete(successful, duplicates, failed int, 
 	fields := []DiscordField{
 		{Name: "Successful", Value: fmt.Sprintf("%d", successful), Inline: true},
 	}
-	
+
 	if duplicates > 0 {
 		fields = append(fields, DiscordField{Name: "Duplicates", Value: fmt.Sprintf("%d", duplicates), Inline: true})
 	}
-	
+
 	if failed > 0 {
 		fields = append(fields, DiscordField{Name: "Failed", Value: fmt.Sprintf("%d", failed), Inline: true})
 	}
@@ -151,7 +151,7 @@ func (d *DiscordService) SendUploadComplete(successful, duplicates, failed int, 
 func (d *DiscordService) SendUploadCompleteWithMetadata(metadata *AudioMetadata) error {
 	var color int
 	var status string
-	
+
 	if metadata.IsValid {
 		color = 0x00ff00 // Green
 		status = "✅ Upload Complete"
@@ -159,7 +159,7 @@ func (d *DiscordService) SendUploadCompleteWithMetadata(metadata *AudioMetadata)
 		color = 0xffa500 // Orange
 		status = "⚠️ Upload Complete (Issues Detected)"
 	}
-	
+
 	// Build description with key audio info
 	description := fmt.Sprintf("**%s** has been uploaded successfully", metadata.Filename)
 	if metadata.DurationText != "" {
@@ -168,20 +168,20 @@ func (d *DiscordService) SendUploadCompleteWithMetadata(metadata *AudioMetadata)
 	if metadata.Quality != "" {
 		description += fmt.Sprintf("\n🎵 Quality: %s", metadata.Quality)
 	}
-	
+
 	// Build detailed fields
 	fields := []DiscordField{
 		{Name: "File Size", Value: fmt.Sprintf("%.1f MB", float64(metadata.FileSize)/(1024*1024)), Inline: true},
 	}
-	
+
 	if metadata.Codec != "" {
 		fields = append(fields, DiscordField{Name: "Codec", Value: metadata.Codec, Inline: true})
 	}
-	
+
 	if metadata.SampleRate > 0 {
 		fields = append(fields, DiscordField{Name: "Sample Rate", Value: fmt.Sprintf("%d Hz", metadata.SampleRate), Inline: true})
 	}
-	
+
 	if metadata.Channels > 0 {
 		channelText := "Mono"
 		if metadata.Channels == 2 {
@@ -191,15 +191,15 @@ func (d *DiscordService) SendUploadCompleteWithMetadata(metadata *AudioMetadata)
 		}
 		fields = append(fields, DiscordField{Name: "Channels", Value: channelText, Inline: true})
 	}
-	
+
 	if metadata.Bitrate > 0 {
 		fields = append(fields, DiscordField{Name: "Bitrate", Value: fmt.Sprintf("%d kbps", metadata.Bitrate), Inline: true})
 	}
-	
+
 	if metadata.BitsPerSample > 0 {
 		fields = append(fields, DiscordField{Name: "Bit Depth", Value: fmt.Sprintf("%d-bit", metadata.BitsPerSample), Inline: true})
 	}
-	
+
 	// Add metadata tags if present
 	if metadata.Title != "" {
 		fields = append(fields, DiscordField{Name: "Title", Value: metadata.Title, Inline: false})
@@ -210,12 +210,12 @@ func (d *DiscordService) SendUploadCompleteWithMetadata(metadata *AudioMetadata)
 	if metadata.Date != "" {
 		fields = append(fields, DiscordField{Name: "Date", Value: metadata.Date, Inline: true})
 	}
-	
+
 	// Add processing duration if available
 	if metadata.ProcessingDuration > 0 {
 		duration := metadata.ProcessingDuration
 		var durationText string
-		
+
 		if duration < time.Second {
 			durationText = fmt.Sprintf("%.0fms", float64(duration.Nanoseconds())/1e6)
 		} else if duration < time.Minute {
@@ -223,10 +223,10 @@ func (d *DiscordService) SendUploadCompleteWithMetadata(metadata *AudioMetadata)
 		} else {
 			durationText = fmt.Sprintf("%.1fm", duration.Minutes())
 		}
-		
+
 		fields = append(fields, DiscordField{Name: "⚡ Processing Time", Value: durationText, Inline: true})
 	}
-	
+
 	// Add warnings if any
 	if len(metadata.Warnings) > 0 {
 		warningText := strings.Join(metadata.Warnings, "\n")
@@ -235,7 +235,7 @@ func (d *DiscordService) SendUploadCompleteWithMetadata(metadata *AudioMetadata)
 		}
 		fields = append(fields, DiscordField{Name: "⚠️ Warnings", Value: warningText, Inline: false})
 	}
-	
+
 	return d.SendNotification(status, description, color, fields)
 }
 

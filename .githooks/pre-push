@@ -1,0 +1,36 @@
+#!/bin/bash
+set -e
+
+echo "🚀 Running pre-push checks..."
+
+# Additional checks before pushing to avoid deployment failures
+echo "🏗️ Performing comprehensive build test..."
+
+# Test Docker build completely (not just syntax)
+if command -v docker >/dev/null 2>&1; then
+  echo "🐳 Testing full Docker build..."
+  docker build -t sermon-uploader-precheck . || {
+    echo "❌ Docker build failed - would fail in GitHub Actions"
+    exit 1
+  }
+  
+  # Clean up test image
+  docker rmi sermon-uploader-precheck >/dev/null 2>&1 || true
+  echo "✅ Docker build test passed"
+fi
+
+# Test docker-compose with pull simulation
+if command -v docker-compose >/dev/null 2>&1; then
+  echo "📋 Testing docker-compose configurations..."
+  for compose_file in docker-compose*.yml; do
+    if [ -f "$compose_file" ]; then
+      echo "  🔍 Testing $compose_file services..."
+      docker-compose -f "$compose_file" config --quiet || {
+        echo "❌ $compose_file configuration invalid"
+        exit 1
+      }
+    fi
+  done
+fi
+
+echo "✅ Pre-push checks passed - safe to deploy!"

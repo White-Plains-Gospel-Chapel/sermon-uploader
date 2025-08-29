@@ -7,11 +7,11 @@ import (
 
 type Config struct {
 	// MinIO Configuration
-	MinIOEndpoint   string
-	MinIOAccessKey  string
-	MinIOSecretKey  string
-	MinIOSecure     bool
-	MinioBucket     string
+	MinIOEndpoint  string
+	MinIOAccessKey string
+	MinIOSecretKey string
+	MinIOSecure    bool
+	MinioBucket    string
 
 	// Discord Configuration
 	DiscordWebhookURL string

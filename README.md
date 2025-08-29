@@ -11,6 +11,7 @@ A complete sermon audio file management system designed for Raspberry Pi deploym
 - **Discord notifications** - Real-time upload status via webhooks
 - **WebSocket updates** - Live progress feedback during uploads
 - **Single Pi deployment** - Everything runs in one Docker container
+- **Pre-commit hooks** - Automatic build validation before commits
 
 ## Project Structure
 
@@ -109,9 +110,39 @@ Test the connections using Postman:
 5. Discord notifications sent for batch operations
 6. Real-time progress via WebSocket
 
+## Development Setup
+
+### First-time Setup
+
+1. **Install Git hooks** (required for all developers):
+   ```bash
+   ./setup-hooks.sh
+   ```
+
+2. **What the hooks do**:
+   - **Pre-commit**: Go build, TypeScript, ESLint, Docker validation
+   - **Pre-push**: Full Docker build test to prevent deployment failures
+   - Automatically prevents broken code from reaching GitHub Actions
+
+3. **Emergency bypass** (use sparingly):
+   ```bash
+   git commit --no-verify  # Skip pre-commit checks
+   git push --no-verify    # Skip pre-push checks
+   ```
+
+### Manual Testing
+```bash
+# Run pre-commit checks manually
+./.githooks/pre-commit
+
+# Run pre-push checks manually  
+./.githooks/pre-push
+```
+
 ## Requirements
 
 - Raspberry Pi with Docker installed
-- MinIO server accessible on network
+- MinIO server accessible on network (or embedded in container)
 - Discord webhook URL for notifications
+- Go 1.21+ and Node.js 18+ for development
 
