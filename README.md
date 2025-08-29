@@ -139,6 +139,31 @@ Test the connections using Postman:
 ./.githooks/pre-push
 ```
 
+### Deployment Monitoring
+
+Monitor GitHub Actions deployments directly in your terminal:
+
+```bash
+# Install GitHub CLI (one-time setup)
+brew install gh
+gh auth login
+
+# Automatic monitoring (runs after every push to master)
+git push origin master  # Automatically starts monitoring
+
+# Manual monitoring anytime
+./watch-deployment.sh   # Live monitoring with error details
+
+# Quick status check
+./check-deployment.sh   # Simple status without GitHub CLI
+```
+
+**Features:**
+- **Live monitoring** during deployment
+- **Exact error details** when deployments fail  
+- **Recent deployment history** and status
+- **Direct links** to failed jobs and logs
+
 ## Requirements
 
 - Raspberry Pi with Docker installed

@@ -24,20 +24,56 @@ if command_exists gh; then
   echo ""
   
   # Wait a moment for the workflow to start
-  sleep 3
+  echo "⏳ Waiting for workflow to start..."
+  sleep 5
   
-  # Watch the latest workflow run
-  gh run watch --exit-status || {
-    echo "❌ Deployment failed or was cancelled"
-    echo "🔍 Check details at: https://github.com/$(gh repo view --json nameWithOwner -q .nameWithOwner)/actions"
-    exit 1
-  }
+  # Get the latest workflow run ID
+  RUN_ID=$(gh run list --limit 1 --json databaseId --jq '.[0].databaseId')
   
-  echo "✅ Deployment completed successfully!"
-  echo "🎉 Your Pi should now be running the latest version"
+  if [ -n "$RUN_ID" ]; then
+    echo "🔍 Found workflow run: $RUN_ID"
+    echo "📊 Starting live monitoring..."
+    echo ""
+    
+    # Watch the workflow with detailed output
+    if gh run watch "$RUN_ID" --exit-status; then
+      echo ""
+      echo "✅ Deployment completed successfully!"
+      echo "🎉 Your Pi should now be running the latest version"
+      
+      # Show final status
+      gh run view "$RUN_ID" --json conclusion,status --jq '"Final Status: " + .status + " (" + .conclusion + ")"'
+    else
+      echo ""
+      echo "❌ Deployment failed!"
+      echo ""
+      echo "🔍 Fetching error details..."
+      
+      # Get detailed failure information
+      gh run view "$RUN_ID" --json jobs --jq '.jobs[] | select(.conclusion == "failure") | "❌ Job: " + .name + "\n   Status: " + .conclusion + "\n   URL: " + .url'
+      
+      echo ""
+      echo "📝 Recent logs from failed job:"
+      FAILED_JOB=$(gh run view "$RUN_ID" --json jobs --jq '.jobs[] | select(.conclusion == "failure") | .name' | head -1)
+      if [ -n "$FAILED_JOB" ]; then
+        echo "--- Last 20 lines of '$FAILED_JOB' ---"
+        gh run view "$RUN_ID" --log --job "$FAILED_JOB" | tail -20
+        echo "--- End of logs ---"
+      fi
+      
+      echo ""
+      echo "🔗 Full details: https://github.com/$(gh repo view --json nameWithOwner -q .nameWithOwner)/actions/runs/$RUN_ID"
+      
+      # Exit with error code
+      exit 1
+    fi
+  else
+    echo "⚠️ Could not find workflow run, it may not have started yet"
+    echo "🔗 Check manually: https://github.com/$(gh repo view --json nameWithOwner -q .nameWithOwner)/actions"
+  fi
   
 else
   echo "⚠️ GitHub CLI not installed"
-  echo "💡 Install with: brew install gh"
+  echo "💡 Install with: brew install gh && gh auth login"
   echo "🔗 Monitor deployment at: https://github.com/White-Plains-Gospel-Chapel/sermon-uploader/actions"
 fi
