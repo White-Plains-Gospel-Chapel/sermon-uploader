@@ -1,0 +1,26 @@
+services:
+  sermon-uploader:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - MINIO_ENDPOINT=192.168.1.127:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-your-access-key}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-your-secret-key}
+      - MINIO_SECURE=${MINIO_SECURE:-false}
+      - MINIO_BUCKET=${MINIO_BUCKET:-sermons}
+      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL}
+      - WAV_SUFFIX=_raw
+      - AAC_SUFFIX=_streamable
+      - BATCH_THRESHOLD=2
+      - PORT=8000
+    volumes:
+      - ./uploads:/app/uploads
+      - ./temp:/app/temp
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run build:*)",
+      "Bash(timeout 60 npm run build)",
+      "Bash(npx tsc:*)",
+      "Bash(docker compose:*)",
+      "Bash(GOOS=linux go build .)",
+      "Bash(docker container prune:*)",
+      "Bash(docker image prune:*)",
+      "Bash(go mod:*)",
+      "Bash(go build:*)",
+      "Bash(docker system prune:*)",
+      "Bash(curl:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

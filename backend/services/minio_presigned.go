@@ -1,0 +1,78 @@
+package services
+
+import (
+	"context"
+	"net/url"
+	"time"
+
+	"github.com/minio/minio-go/v7"
+)
+
+// GeneratePresignedUploadURL creates a presigned URL for direct upload to MinIO
+func (m *MinIOService) GeneratePresignedUploadURL(filename string, expiry time.Duration) (string, error) {
+	// Ensure bucket exists
+	if err := m.EnsureBucketExists(); err != nil {
+		return "", err
+	}
+
+	// Generate presigned PUT URL
+	presignedURL, err := m.client.PresignedPutObject(
+		context.Background(),
+		m.config.MinioBucket,
+		filename, // Store in wav directory
+		expiry,
+	)
+	if err != nil {
+		return "", err
+	}
+
+	return presignedURL.String(), nil
+}
+
+// FileExists checks if a file exists in MinIO
+func (m *MinIOService) FileExists(filename string) (bool, error) {
+	_, err := m.client.StatObject(
+		context.Background(),
+		m.config.MinioBucket,
+		filename,
+		minio.StatObjectOptions{},
+	)
+	if err != nil {
+		if minio.ToErrorResponse(err).Code == "NoSuchKey" {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// GetFileInfo gets information about a file in MinIO
+func (m *MinIOService) GetFileInfo(filename string) (*minio.ObjectInfo, error) {
+	info, err := m.client.StatObject(
+		context.Background(),
+		m.config.MinioBucket,
+		filename,
+		minio.StatObjectOptions{},
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
+// GeneratePresignedDownloadURL creates a presigned URL for downloading
+func (m *MinIOService) GeneratePresignedDownloadURL(filename string, expiry time.Duration) (string, error) {
+	reqParams := make(url.Values)
+	presignedURL, err := m.client.PresignedGetObject(
+		context.Background(),
+		m.config.MinioBucket,
+		filename,
+		expiry,
+		reqParams,
+	)
+	if err != nil {
+		return "", err
+	}
+
+	return presignedURL.String(), nil
+}

@@ -1,0 +1,11 @@
+[project]
+name = "pi-processor"
+version = "0.1.0"
+description = "Sermon processor for Raspberry Pi - converts WAV to AAC for streaming"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "minio>=7.2.0",
+    "python-dotenv>=1.0.0",
+    "requests>=2.31.0",
+]

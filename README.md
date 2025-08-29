@@ -1,124 +1,117 @@
-# Sermon Uploader
+# Sermon Uploader Pi
 
-A multi-component system for processing and managing sermon uploads, consisting of a host machine processor and a Raspberry Pi queue GUI.
+A complete sermon audio file management system designed for Raspberry Pi deployment. Upload WAV files through a web interface, automatically convert to streaming-ready AAC format, and get Discord notifications.
+
+## Features
+
+- **Web-based drag & drop interface** - Modern React frontend with shadcn/ui
+- **Audio processing** - WAV to AAC conversion at 320kbps using FFmpeg  
+- **Duplicate detection** - SHA256 hashing prevents duplicate uploads
+- **MinIO object storage** - Reliable file storage and retrieval
+- **Discord notifications** - Real-time upload status via webhooks
+- **WebSocket updates** - Live progress feedback during uploads
+- **Single Pi deployment** - Everything runs in one Docker container
 
 ## Project Structure
 
 ```
 sermon-uploader/
-├── ssd-host/           # Host machine sermon processor
-│   ├── Dockerfile      # Docker configuration for host
-│   ├── sermon_processor.py
-│   ├── pyproject.toml
-│   └── .python-version
-├── pi-processor/       # Raspberry Pi queue GUI
-│   ├── Dockerfile      # Docker configuration for Pi
-│   └── sermon_queue_gui.py
-├── .gitignore         # Git ignore rules for entire project
-└── README.md          # This file
+├── backend/                 # Go backend with Fiber framework
+│   ├── main.go             # Main application entry point
+│   ├── handlers/           # HTTP request handlers
+│   ├── services/           # Core business logic services
+│   ├── config/             # Configuration management
+│   ├── go.mod              # Go dependencies
+│   └── .env.example        # Environment template
+├── frontend/               # React frontend with Next.js
+│   ├── components/         # UI components (shadcn/ui)
+│   ├── app/                # Next.js app router
+│   ├── package.json        # Node.js dependencies
+│   └── tailwind.config.js  # Styling configuration
+├── Dockerfile              # Single container build
+├── docker-compose.yml      # Pi deployment config
+└── README.md              # This file
 ```
 
-## Components
+## Quick Start
 
-### SSD Host Processor (`ssd-host/`)
-- Main sermon processing engine
-- Runs on the host machine with SSD storage
-- Handles bulk sermon processing and storage
+1. **Clone and configure:**
+   ```bash
+   git clone <repo-url>
+   cd sermon-uploader
+   cp backend/.env.example backend/.env
+   # Edit backend/.env with your settings
+   ```
 
-### Pi Processor (`pi-processor/`)
-- Queue management GUI
-- Runs on Raspberry Pi
-- Provides user interface for sermon queue management
+2. **Deploy on Pi:**
+   ```bash
+   docker-compose up -d
+   ```
 
-## Docker Images
+3. **Access the interface:**
+   Open `http://your-pi-ip:8000` in your browser
 
-### Building Images
+## Configuration
 
-#### Host Machine Image
+Edit `backend/.env` with your settings:
+
 ```bash
-cd ssd-host
-docker build -t sermon-uploader-host:latest .
+# MinIO Configuration
+MINIO_ENDPOINT=192.168.1.127:9000
+MINIO_ACCESS_KEY=your-access-key
+MINIO_SECRET_KEY=your-secret-key
+MINIO_SECURE=false
+MINIO_BUCKET=sermons
+
+# Discord Configuration  
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+
+# File Processing
+WAV_SUFFIX=_raw
+AAC_SUFFIX=_streamable
+BATCH_THRESHOLD=2
+
+# Server
+PORT=8000
 ```
 
-#### Pi Image
-```bash
-cd pi-processor
-docker build -t sermon-uploader-pi:latest .
-```
+## Testing
 
-### Publishing to GitHub Container Registry
+Test the connections using Postman:
 
-1. **Login to GitHub Container Registry:**
-```bash
-echo $GITHUB_TOKEN | docker login ghcr.io -u USERNAME --password-stdin
-```
+- **Discord webhook:** `POST http://your-pi-ip:8000/api/test/discord`
+- **MinIO connection:** `GET http://your-pi-ip:8000/api/test/minio`
 
-2. **Tag and push host image:**
-```bash
-docker tag sermon-uploader-host:latest ghcr.io/USERNAME/sermon-uploader-host:latest
-docker push ghcr.io/USERNAME/sermon-uploader-host:latest
-```
+## API Endpoints
 
-3. **Tag and push Pi image:**
-```bash
-docker tag sermon-uploader-pi:latest ghcr.io/USERNAME/sermon-uploader-pi:latest
-docker push ghcr.io/USERNAME/sermon-uploader-pi:latest
-```
+- `GET /api/health` - Health check
+- `GET /api/status` - System status (MinIO, bucket, file count)
+- `POST /api/upload` - Upload WAV files
+- `GET /api/files` - List stored files
+- `POST /api/test/discord` - Test Discord webhook
+- `GET /api/test/minio` - Test MinIO connection
+- `GET /ws` - WebSocket for real-time updates
 
-### Publishing to Docker Hub
+## Architecture
 
-1. **Login to Docker Hub:**
-```bash
-docker login
-```
+- **Go backend** - Fiber web framework for Pi performance
+- **React frontend** - Next.js with shadcn/ui components  
+- **MinIO storage** - S3-compatible object storage
+- **FFmpeg processing** - Audio format conversion
+- **Docker deployment** - Single container with everything
 
-2. **Tag and push images:**
-```bash
-docker tag sermon-uploader-host:latest USERNAME/sermon-uploader-host:latest
-docker push USERNAME/sermon-uploader-host:latest
+## File Processing
 
-docker tag sermon-uploader-pi:latest USERNAME/sermon-uploader-pi:latest
-docker push USERNAME/sermon-uploader-pi:latest
-```
+1. Upload WAV files via web interface
+2. System calculates SHA256 hash for duplicate detection
+3. Files stored in MinIO with `_raw` suffix
+4. FFmpeg converts to AAC format with `_streamable` suffix
+5. Discord notifications sent for batch operations
+6. Real-time progress via WebSocket
 
-## Environment Configuration
+## Requirements
 
-Each component has its own `.env` file for configuration:
+- Raspberry Pi with Docker installed
+- MinIO server accessible on network
+- Discord webhook URL for notifications
 
-- `ssd-host/.env` - Host machine configuration
-- `pi-processor/.env` - Pi configuration
-
-**Note:** `.env` files are ignored by Git for security. Copy `.env.example` files if they exist, or create your own based on the component requirements.
-
-## Development
-
-### Prerequisites
-- Python 3.8+
-- Docker
-- Git
-
-### Setup
-1. Clone the repository
-2. Create appropriate `.env` files in each component directory
-3. Build Docker images as needed
-4. Run components using Docker Compose or individual Docker commands
-
-## Deployment
-
-### Using Docker Compose (Recommended)
-Create a `docker-compose.yml` file in the root directory to orchestrate both services.
-
-### Manual Deployment
-Deploy each component independently using their respective Docker images.
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
-
-## License
-
-[Add your license information here]

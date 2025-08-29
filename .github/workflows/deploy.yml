@@ -1,0 +1,302 @@
+name: Deploy to Raspberry Pi
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # Security scan before building
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Run secret detection
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: main
+          head: HEAD
+          
+  # Build and push Docker image
+  build-and-push:
+    needs: security-scan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Deploy to Raspberry Pi with automatic secret injection
+  deploy-to-pi:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    
+    steps:
+      - name: Create deployment script with secrets
+        run: |
+          cat > deploy-script.sh << 'EOF'
+          #!/bin/bash
+          set -e
+          
+          echo "🚀 Starting deployment..."
+          
+          # Navigate to project directory
+          cd /opt/sermon-uploader || { echo "❌ Project directory not found"; exit 1; }
+          
+          # Pull latest code
+          git pull origin main
+          
+          # Create/update .env file with secrets from GitHub
+          cat > .env << EOL
+          # MinIO Configuration
+          MINIO_ENDPOINT=${{ secrets.MINIO_ENDPOINT }}
+          MINIO_ACCESS_KEY=${{ secrets.MINIO_ACCESS_KEY }}
+          MINIO_SECRET_KEY=${{ secrets.MINIO_SECRET_KEY }}
+          MINIO_SECURE=${{ secrets.MINIO_SECURE }}
+          MINIO_BUCKET=${{ secrets.MINIO_BUCKET }}
+          
+          # Discord Configuration  
+          DISCORD_WEBHOOK_URL=${{ secrets.DISCORD_WEBHOOK_URL }}
+          
+          # Application Configuration
+          WAV_SUFFIX=${{ secrets.WAV_SUFFIX }}
+          AAC_SUFFIX=${{ secrets.AAC_SUFFIX }}
+          BATCH_THRESHOLD=${{ secrets.BATCH_THRESHOLD }}
+          PORT=${{ secrets.PORT }}
+          
+          # Generated at deployment
+          DEPLOYMENT_ID=${GITHUB_SHA:0:7}
+          DEPLOYMENT_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          EOL
+          
+          # Set proper permissions
+          chmod 600 .env
+          
+          # Pull latest images
+          echo "📦 Pulling latest container images..."
+          docker compose -f docker-compose.prod.yml pull
+          
+          # Update only the sermon-uploader service (preserve MinIO data)
+          echo "🔄 Updating sermon uploader service..."
+          docker compose -f docker-compose.prod.yml up -d --force-recreate sermon-uploader
+          
+          # Wait for service to be ready
+          echo "⏳ Waiting for service to start..."
+          sleep 15
+          
+          # Health check with retry
+          for i in {1..5}; do
+            if curl -f http://localhost:8000/api/health >/dev/null 2>&1; then
+              echo "✅ Deployment successful - Health check passed (attempt $i)"
+              break
+            elif [ $i -eq 5 ]; then
+              echo "❌ Deployment failed - Health check failed after 5 attempts"
+              docker compose -f docker-compose.prod.yml logs sermon-uploader
+              exit 1
+            else
+              echo "⏳ Health check failed, retrying in 10s... (attempt $i)"
+              sleep 10
+            fi
+          done
+          
+          # Clean up old images and containers
+          echo "🧹 Cleaning up old images..."
+          docker image prune -af --filter="until=24h"
+          docker container prune -f --filter="until=24h"
+          
+          # Show final status
+          echo "📊 Deployment complete!"
+          docker compose -f docker-compose.prod.yml ps
+          
+          # Test upload endpoint
+          echo "🧪 Testing upload endpoint..."
+          curl -f http://localhost:8000/api/health | jq '.' || echo "Health check response not JSON"
+          
+          echo "🎉 All systems operational!"
+          EOF
+          
+          chmod +x deploy-script.sh
+
+      - name: Deploy to Pi via SSH
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.PI_HOST }}
+          username: ${{ secrets.PI_USER }}
+          key: ${{ secrets.PI_SSH_KEY }}
+          port: ${{ secrets.PI_PORT || 22 }}
+          script_stop: true
+          script: |
+            # Execute the deployment script
+            bash -c "$(cat << 'DEPLOY_SCRIPT_END'
+            #!/bin/bash
+            set -e
+            
+            echo "🚀 Starting deployment..."
+            
+            # Navigate to project directory
+            cd /opt/sermon-uploader || { echo "❌ Project directory not found"; exit 1; }
+            
+            # Pull latest code
+            git pull origin main
+            
+            # Create/update .env file with secrets from GitHub
+            cat > .env << 'EOL'
+            # MinIO Configuration
+            MINIO_ENDPOINT=${{ secrets.MINIO_ENDPOINT }}
+            MINIO_ACCESS_KEY=${{ secrets.MINIO_ACCESS_KEY }}
+            MINIO_SECRET_KEY=${{ secrets.MINIO_SECRET_KEY }}
+            MINIO_SECURE=${{ secrets.MINIO_SECURE }}
+            MINIO_BUCKET=${{ secrets.MINIO_BUCKET }}
+            
+            # Discord Configuration  
+            DISCORD_WEBHOOK_URL=${{ secrets.DISCORD_WEBHOOK_URL }}
+            
+            # Application Configuration
+            WAV_SUFFIX=${{ secrets.WAV_SUFFIX || '_raw' }}
+            AAC_SUFFIX=${{ secrets.AAC_SUFFIX || '_streamable' }}
+            BATCH_THRESHOLD=${{ secrets.BATCH_THRESHOLD || '2' }}
+            PORT=${{ secrets.PORT || '8000' }}
+            
+            # Generated at deployment
+            DEPLOYMENT_ID=${{ github.sha }}
+            DEPLOYMENT_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            EOL
+            
+            # Set proper permissions
+            chmod 600 .env
+            
+            # Pull latest images
+            echo "📦 Pulling latest container images..."
+            docker compose -f docker-compose.prod.yml pull
+            
+            # Update only the sermon-uploader service (preserve MinIO data)
+            echo "🔄 Updating sermon uploader service..."
+            docker compose -f docker-compose.prod.yml up -d --force-recreate sermon-uploader
+            
+            # Wait for service to be ready
+            echo "⏳ Waiting for service to start..."
+            sleep 15
+            
+            # Health check with retry
+            for i in {1..5}; do
+              if curl -f http://localhost:${{ secrets.PORT || '8000' }}/api/health >/dev/null 2>&1; then
+                echo "✅ Deployment successful - Health check passed (attempt $i)"
+                break
+              elif [ $i -eq 5 ]; then
+                echo "❌ Deployment failed - Health check failed after 5 attempts"
+                docker compose -f docker-compose.prod.yml logs sermon-uploader --tail=50
+                exit 1
+              else
+                echo "⏳ Health check failed, retrying in 10s... (attempt $i)"
+                sleep 10
+              fi
+            done
+            
+            # Clean up old images and containers
+            echo "🧹 Cleaning up old images..."
+            docker image prune -af --filter="until=24h" || true
+            docker container prune -f --filter="until=24h" || true
+            
+            # Show final status
+            echo "📊 Deployment complete!"
+            docker compose -f docker-compose.prod.yml ps
+            
+            echo "🎉 All systems operational!"
+            DEPLOY_SCRIPT_END
+            )"
+
+  # Notify deployment status
+  notify:
+    needs: [build-and-push, deploy-to-pi]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Notify Discord
+        if: always()
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          STATUS="${{ needs.deploy-to-pi.result }}"
+          BUILD_STATUS="${{ needs.build-and-push.result }}"
+          COLOR="65280"  # Green
+          TITLE="🚀 Deployment Successful"
+          DESCRIPTION="Sermon uploader successfully deployed to Raspberry Pi"
+          
+          if [ "$STATUS" != "success" ] || [ "$BUILD_STATUS" != "success" ]; then
+            COLOR="16711680"  # Red
+            TITLE="❌ Deployment Failed"
+            DESCRIPTION="Deployment to Raspberry Pi encountered errors"
+          fi
+          
+          # Only send notification if webhook URL is provided
+          if [ -n "$DISCORD_WEBHOOK" ]; then
+            curl -X POST "$DISCORD_WEBHOOK" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"embeds\": [{
+                  \"title\": \"$TITLE\",
+                  \"description\": \"$DESCRIPTION\",
+                  \"color\": $COLOR,
+                  \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",
+                  \"fields\": [
+                    {\"name\": \"Repository\", \"value\": \"${{ github.repository }}\", \"inline\": true},
+                    {\"name\": \"Branch\", \"value\": \"${{ github.ref_name }}\", \"inline\": true},
+                    {\"name\": \"Commit\", \"value\": \"${{ github.sha }}\", \"inline\": false},
+                    {\"name\": \"Build Status\", \"value\": \"$BUILD_STATUS\", \"inline\": true},
+                    {\"name\": \"Deploy Status\", \"value\": \"$STATUS\", \"inline\": true},
+                    {\"name\": \"Actor\", \"value\": \"${{ github.actor }}\", \"inline\": true}
+                  ],
+                  \"footer\": {
+                    \"text\": \"GitHub Actions\"
+                  }
+                }]
+              }"
+          else
+            echo "No Discord webhook configured, skipping notification"
+          fi
