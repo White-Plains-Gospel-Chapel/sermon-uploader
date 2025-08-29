@@ -239,22 +239,55 @@ jobs:
             echo "🔄 Updating sermon uploader service..."
             docker compose -f docker-compose.prod.yml up -d --force-recreate sermon-uploader
             
-            # Wait for service to be ready
-            echo "⏳ Waiting for service to start..."
-            sleep 15
-            
-            # Health check with retry
-            for i in {1..5}; do
-              if curl -f http://localhost:${{ secrets.PORT || '8000' }}/api/health >/dev/null 2>&1; then
-                echo "✅ Deployment successful - Health check passed (attempt $i)"
+            # Wait for MinIO to be ready first
+            echo "⏳ Waiting for MinIO to start..."
+            for i in {1..12}; do
+              if docker compose -f docker-compose.prod.yml exec -T minio curl -f http://localhost:9000/minio/health/live >/dev/null 2>&1; then
+                echo "✅ MinIO is ready (attempt $i)"
                 break
-              elif [ $i -eq 5 ]; then
-                echo "❌ Deployment failed - Health check failed after 5 attempts"
-                docker compose -f docker-compose.prod.yml logs sermon-uploader --tail=50
+              elif [ $i -eq 12 ]; then
+                echo "❌ MinIO failed to start after 2 minutes"
+                docker compose -f docker-compose.prod.yml logs minio --tail=30
                 exit 1
               else
-                echo "⏳ Health check failed, retrying in 10s... (attempt $i)"
+                echo "⏳ MinIO not ready, retrying in 10s... (attempt $i)"
                 sleep 10
+              fi
+            done
+            
+            # Wait for main service to be ready
+            echo "⏳ Waiting for sermon uploader to start..."
+            sleep 30
+            
+            # Health check with retry and better error reporting
+            PORT_TO_USE=${{ secrets.PORT || '8000' }}
+            for i in {1..8}; do
+              echo "🔍 Attempting health check (attempt $i/8) on port $PORT_TO_USE..."
+              
+              # Check if container is running
+              if ! docker compose -f docker-compose.prod.yml ps sermon-uploader | grep -q "Up"; then
+                echo "❌ Container is not running!"
+                docker compose -f docker-compose.prod.yml logs sermon-uploader --tail=20
+                exit 1
+              fi
+              
+              # Try health check
+              if curl -f http://localhost:$PORT_TO_USE/api/health >/dev/null 2>&1; then
+                echo "✅ Deployment successful - Health check passed (attempt $i)"
+                curl http://localhost:$PORT_TO_USE/api/health 2>/dev/null || echo "Health endpoint accessible"
+                break
+              elif [ $i -eq 8 ]; then
+                echo "❌ Deployment failed - Health check failed after 8 attempts"
+                echo "📊 Container status:"
+                docker compose -f docker-compose.prod.yml ps
+                echo "📝 Recent logs:"
+                docker compose -f docker-compose.prod.yml logs sermon-uploader --tail=50
+                echo "🌐 Network test:"
+                curl -v http://localhost:$PORT_TO_USE/api/health || echo "Connection failed"
+                exit 1
+              else
+                echo "⏳ Health check failed, retrying in 15s... (attempt $i)"
+                sleep 15
               fi
             done
             
