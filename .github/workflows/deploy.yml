@@ -302,35 +302,64 @@ jobs:
             echo "⏳ Waiting for sermon uploader to start..."
             sleep 30
             
-            # Health check with retry and better error reporting
-            PORT_TO_USE=${{ secrets.PORT || '8000' }}
-            for i in {1..8}; do
-              echo "🔍 Attempting health check (attempt $i/8) on port $PORT_TO_USE..."
+            # Enhanced health check with better diagnostics
+            PORT_TO_USE=8000  # Use actual port value instead of variable
+            echo "🔍 Starting enhanced health check on port $PORT_TO_USE..."
+            
+            # Show initial container startup logs
+            echo "📝 Container startup logs:"
+            docker compose -f docker-compose.single.yml logs sermon-uploader --tail=50
+            
+            for i in {1..10}; do
+              echo "🔍 Attempting health check (attempt $i/10) on port $PORT_TO_USE..."
               
               # Check if container is running
               if ! docker compose -f docker-compose.single.yml ps sermon-uploader | grep -q "Up"; then
                 echo "❌ Container is not running!"
-                docker compose -f docker-compose.single.yml logs sermon-uploader --tail=20
-                exit 1
-              fi
-              
-              # Try health check
-              if curl -f http://localhost:$PORT_TO_USE/api/health >/dev/null 2>&1; then
-                echo "✅ Deployment successful - Health check passed (attempt $i)"
-                curl http://localhost:$PORT_TO_USE/api/health 2>/dev/null || echo "Health endpoint accessible"
-                break
-              elif [ $i -eq 8 ]; then
-                echo "❌ Deployment failed - Health check failed after 8 attempts"
                 echo "📊 Container status:"
                 docker compose -f docker-compose.single.yml ps
                 echo "📝 Recent logs:"
                 docker compose -f docker-compose.single.yml logs sermon-uploader --tail=50
-                echo "🌐 Network test:"
-                curl -v http://localhost:$PORT_TO_USE/api/health || echo "Connection failed"
+                exit 1
+              fi
+              
+              # Check what ports are actually exposed
+              echo "🔍 Checking exposed ports:"
+              docker compose -f docker-compose.single.yml ps sermon-uploader
+              
+              # Test different health check approaches
+              if curl -f http://localhost:$PORT_TO_USE/api/health >/dev/null 2>&1; then
+                echo "✅ Deployment successful - Health check passed (attempt $i)"
+                curl -s http://localhost:$PORT_TO_USE/api/health | head -3 || echo "Health endpoint accessible"
+                break
+              elif [ $i -eq 10 ]; then
+                echo "❌ Deployment failed - Health check failed after 10 attempts"
+                echo ""
+                echo "📊 Final diagnostics:"
+                echo "--- Container Status ---"
+                docker compose -f docker-compose.single.yml ps sermon-uploader
+                echo ""
+                echo "--- Port Bindings ---"
+                docker port $(docker compose -f docker-compose.single.yml ps -q sermon-uploader) || echo "No port bindings found"
+                echo ""
+                echo "--- Recent Logs (last 50 lines) ---"
+                docker compose -f docker-compose.single.yml logs sermon-uploader --tail=50
+                echo ""
+                echo "--- Network Connectivity Test ---"
+                echo "Testing localhost:$PORT_TO_USE..."
+                curl -v --connect-timeout 5 http://localhost:$PORT_TO_USE/api/health || echo "Connection failed"
+                echo ""
+                echo "Testing 127.0.0.1:$PORT_TO_USE..."
+                curl -v --connect-timeout 5 http://127.0.0.1:$PORT_TO_USE/api/health || echo "Connection failed"
+                echo ""
+                echo "--- Process Check ---"
+                docker compose -f docker-compose.single.yml exec -T sermon-uploader ps aux || echo "Could not check processes"
                 exit 1
               else
-                echo "⏳ Health check failed, retrying in 15s... (attempt $i)"
-                sleep 15
+                echo "⏳ Health check failed, retrying in 20s... (attempt $i)"
+                echo "📝 Current logs:"
+                docker compose -f docker-compose.single.yml logs sermon-uploader --tail=10
+                sleep 20
               fi
             done
             

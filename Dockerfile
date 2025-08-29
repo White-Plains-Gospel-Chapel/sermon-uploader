@@ -63,32 +63,77 @@ RUN cat > /app/start.sh << 'EOF'
 #!/bin/bash
 set -e
 
+echo "🚀 Starting sermon uploader container..."
+
+# Verify binaries exist
+if [ ! -f "/usr/local/bin/minio" ]; then
+  echo "❌ MinIO binary not found"
+  exit 1
+fi
+
+if [ ! -f "./sermon-uploader" ]; then
+  echo "❌ Sermon uploader binary not found"
+  exit 1
+fi
+
 # Start MinIO in background
-echo "Starting MinIO server..."
+echo "🗄️ Starting MinIO server..."
 MINIO_ROOT_USER="${MINIO_ACCESS_KEY:-admin}" \
 MINIO_ROOT_PASSWORD="${MINIO_SECRET_KEY:-password}" \
-minio server /app/data/minio --console-address ":9001" &
+minio server /app/data/minio --console-address ":9001" --address ":9000" &
+MINIO_PID=$!
 
-# Wait for MinIO to be ready
-echo "Waiting for MinIO to start..."
-sleep 5
-for i in {1..30}; do
+echo "⏳ Waiting for MinIO to start..."
+sleep 10
+
+# Wait for MinIO to be ready with more attempts
+for i in {1..60}; do
   if curl -f http://localhost:9000/minio/health/live >/dev/null 2>&1; then
-    echo "MinIO is ready!"
+    echo "✅ MinIO is ready! (attempt $i)"
     break
+  elif [ $i -eq 60 ]; then
+    echo "❌ MinIO failed to start after 60 attempts"
+    echo "MinIO logs:"
+    jobs -p | xargs -I {} kill -0 {} 2>/dev/null || echo "MinIO process not running"
+    exit 1
+  else
+    echo "⏳ MinIO not ready yet... (attempt $i/60)"
+    sleep 2
   fi
-  sleep 1
 done
 
 # Create bucket if it doesn't exist
+echo "📦 Setting up MinIO bucket..."
 if command -v mc >/dev/null 2>&1; then
-  mc alias set local http://localhost:9000 "${MINIO_ACCESS_KEY:-admin}" "${MINIO_SECRET_KEY:-password}" || true
-  mc mb local/"${MINIO_BUCKET:-sermons}" --ignore-existing || true
-  mc anonymous set public local/"${MINIO_BUCKET:-sermons}" || true
+  echo "Configuring mc client..."
+  mc alias set local http://localhost:9000 "${MINIO_ACCESS_KEY:-admin}" "${MINIO_SECRET_KEY:-password}" || {
+    echo "❌ Failed to configure mc client"
+    exit 1
+  }
+  
+  echo "Creating bucket: ${MINIO_BUCKET:-sermons}"
+  mc mb local/"${MINIO_BUCKET:-sermons}" --ignore-existing || {
+    echo "⚠️ Warning: Could not create bucket (may already exist)"
+  }
+  
+  echo "Setting bucket policy..."
+  mc anonymous set public local/"${MINIO_BUCKET:-sermons}" || {
+    echo "⚠️ Warning: Could not set bucket policy"
+  }
+  
+  echo "✅ MinIO setup complete!"
+else
+  echo "⚠️ mc command not available, skipping bucket setup"
 fi
 
+# Verify environment variables
+echo "🔧 Environment check:"
+echo "  PORT: ${PORT:-8000}"
+echo "  MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://localhost:9000}"
+echo "  MINIO_BUCKET: ${MINIO_BUCKET:-sermons}"
+
 # Start the main application
-echo "Starting sermon uploader..."
+echo "🚀 Starting sermon uploader on port ${PORT:-8000}..."
 exec ./sermon-uploader
 EOF
 
