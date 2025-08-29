@@ -374,3 +374,100 @@ func (h *Handlers) GetDashboard(c *fiber.Ctx) error {
 	
 	return c.JSON(dashboard)
 }
+
+// MigrateMinIO handles migration from external MinIO to embedded MinIO
+func (h *Handlers) MigrateMinIO(c *fiber.Ctx) error {
+	// Get migration parameters
+	sourceEndpoint := c.FormValue("source_endpoint")
+	sourceAccessKey := c.FormValue("source_access_key") 
+	sourceSecretKey := c.FormValue("source_secret_key")
+	sourceBucket := c.FormValue("source_bucket", "sermons")
+	
+	if sourceEndpoint == "" || sourceAccessKey == "" || sourceSecretKey == "" {
+		return c.Status(400).JSON(fiber.Map{
+			"success": false,
+			"message": "Missing required migration parameters",
+		})
+	}
+	
+	log.Printf("Starting MinIO migration from %s", sourceEndpoint)
+	
+	// Create temporary source MinIO service
+	sourceMinio, err := h.minioService.CreateTempConnection(sourceEndpoint, sourceAccessKey, sourceSecretKey)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{
+			"success": false,
+			"message": "Failed to connect to source MinIO",
+			"error": err.Error(),
+		})
+	}
+	
+	// List all files in source bucket
+	files, err := sourceMinio.ListFiles()
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{
+			"success": false,
+			"message": "Failed to list files from source MinIO",
+			"error": err.Error(),
+		})
+	}
+	
+	log.Printf("Found %d files to migrate", len(files))
+	
+	// Ensure destination bucket exists and migrate policies
+	if err := h.minioService.MigratePolicies(sourceMinio); err != nil {
+		log.Printf("Warning: Policy migration failed: %v", err)
+		// Continue with file migration even if policy migration fails
+		if err := h.minioService.EnsureBucketExists(); err != nil {
+			return c.Status(500).JSON(fiber.Map{
+				"success": false,
+				"message": "Failed to create destination bucket",
+				"error": err.Error(),
+			})
+		}
+	}
+	
+	// Migrate each file
+	migratedCount := 0
+	errors := []string{}
+	
+	for _, fileData := range files {
+		fileName, ok := fileData["name"].(string)
+		if !ok {
+			continue
+		}
+		
+		// Download from source
+		data, err := sourceMinio.DownloadFile(fileName)
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("Failed to download %s: %v", fileName, err))
+			continue
+		}
+		
+		// Upload to destination
+		_, err = h.minioService.UploadFile(fileName, data)
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("Failed to upload %s: %v", fileName, err))
+			continue
+		}
+		
+		migratedCount++
+		log.Printf("Migrated file %d/%d: %s", migratedCount, len(files), fileName)
+	}
+	
+	log.Printf("Migration completed: %d files migrated, %d errors", migratedCount, len(errors))
+	
+	response := fiber.Map{
+		"success": true,
+		"message": fmt.Sprintf("Migration completed: %d files migrated", migratedCount),
+		"migrated_count": migratedCount,
+		"total_files": len(files),
+	}
+	
+	if len(errors) > 0 {
+		response["errors"] = errors
+		response["error_count"] = len(errors)
+	}
+	
+	return c.JSON(response)
+}

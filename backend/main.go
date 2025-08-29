@@ -103,6 +103,9 @@ func main() {
 		api.Post("/test/discord", h.TestDiscord)
 		api.Get("/test/minio", h.TestMinIO)
 		
+		// Migration endpoint
+		api.Post("/migrate/minio", h.MigrateMinIO)
+		
 		// Dangerous operations (require confirmation)
 		api.Delete("/bucket/clear", h.ClearBucket)
 	}

@@ -205,6 +205,13 @@ jobs:
             # Pull latest code
             git pull origin main
             
+            # Check if we need to migrate from separate containers to single container
+            MIGRATION_NEEDED=false
+            if docker compose -f docker-compose.prod.yml ps minio 2>/dev/null | grep -q "Up"; then
+              echo "📦 Existing MinIO container detected - migration needed"
+              MIGRATION_NEEDED=true
+            fi
+            
             # Create/update .env file with secrets from GitHub
             cat > .env << 'EOL'
             # MinIO Configuration
@@ -233,21 +240,57 @@ jobs:
             
             # Pull latest images
             echo "📦 Pulling latest container images..."
-            docker compose -f docker-compose.prod.yml pull
             
-            # Update only the sermon-uploader service (preserve MinIO data)
-            echo "🔄 Updating sermon uploader service..."
-            docker compose -f docker-compose.prod.yml up -d --force-recreate sermon-uploader
+            if [ "$MIGRATION_NEEDED" = "true" ]; then
+              echo "🔄 Starting migration to single container..."
+              
+              # Pull new single container image
+              docker compose -f docker-compose.single.yml pull
+              
+              # Start new single container (will fail migration API call, but that's expected)
+              echo "🚀 Starting new single container architecture..."
+              docker compose -f docker-compose.single.yml up -d || {
+                echo "⚠️ Initial startup failed, this is expected for migration"
+              }
+              
+              # Wait for new container to be ready for migration
+              sleep 30
+              
+              # Perform migration via API
+              echo "📡 Calling migration API..."
+              curl -X POST http://localhost:${{ secrets.PORT || '8000' }}/api/migrate/minio \
+                -F "source_endpoint=http://localhost:9000" \
+                -F "source_access_key=${{ secrets.MINIO_ACCESS_KEY }}" \
+                -F "source_secret_key=${{ secrets.MINIO_SECRET_KEY }}" \
+                -F "source_bucket=${{ secrets.MINIO_BUCKET || 'sermons' }}" \
+                --max-time 300 || {
+                echo "❌ Migration API call failed"
+                echo "📝 Checking migration logs..."
+                docker compose -f docker-compose.single.yml logs sermon-uploader --tail=20
+                exit 1
+              }
+              
+              echo "✅ Migration completed successfully"
+              
+              # Stop old separate containers
+              echo "🛑 Stopping old separate containers..."
+              docker compose -f docker-compose.prod.yml down || true
+              
+            else
+              echo "🔄 Standard update (single container already in use)..."
+              docker compose -f docker-compose.single.yml pull
+              docker compose -f docker-compose.single.yml up -d --force-recreate
+            fi
             
-            # Wait for MinIO to be ready first
+            # Wait for MinIO to be ready (now inside single container)
             echo "⏳ Waiting for MinIO to start..."
             for i in {1..12}; do
-              if docker compose -f docker-compose.prod.yml exec -T minio curl -f http://localhost:9000/minio/health/live >/dev/null 2>&1; then
+              if curl -f http://localhost:9000/minio/health/live >/dev/null 2>&1; then
                 echo "✅ MinIO is ready (attempt $i)"
                 break
               elif [ $i -eq 12 ]; then
                 echo "❌ MinIO failed to start after 2 minutes"
-                docker compose -f docker-compose.prod.yml logs minio --tail=30
+                docker compose -f docker-compose.single.yml logs sermon-uploader --tail=30
                 exit 1
               else
                 echo "⏳ MinIO not ready, retrying in 10s... (attempt $i)"
@@ -265,9 +308,9 @@ jobs:
               echo "🔍 Attempting health check (attempt $i/8) on port $PORT_TO_USE..."
               
               # Check if container is running
-              if ! docker compose -f docker-compose.prod.yml ps sermon-uploader | grep -q "Up"; then
+              if ! docker compose -f docker-compose.single.yml ps sermon-uploader | grep -q "Up"; then
                 echo "❌ Container is not running!"
-                docker compose -f docker-compose.prod.yml logs sermon-uploader --tail=20
+                docker compose -f docker-compose.single.yml logs sermon-uploader --tail=20
                 exit 1
               fi
               
@@ -279,9 +322,9 @@ jobs:
               elif [ $i -eq 8 ]; then
                 echo "❌ Deployment failed - Health check failed after 8 attempts"
                 echo "📊 Container status:"
-                docker compose -f docker-compose.prod.yml ps
+                docker compose -f docker-compose.single.yml ps
                 echo "📝 Recent logs:"
-                docker compose -f docker-compose.prod.yml logs sermon-uploader --tail=50
+                docker compose -f docker-compose.single.yml logs sermon-uploader --tail=50
                 echo "🌐 Network test:"
                 curl -v http://localhost:$PORT_TO_USE/api/health || echo "Connection failed"
                 exit 1
@@ -298,7 +341,7 @@ jobs:
             
             # Show final status
             echo "📊 Deployment complete!"
-            docker compose -f docker-compose.prod.yml ps
+            docker compose -f docker-compose.single.yml ps
             
             echo "🎉 All systems operational!"
             DEPLOY_SCRIPT_END

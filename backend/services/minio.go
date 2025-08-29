@@ -362,3 +362,107 @@ type ClearBucketResult struct {
 	FailedCount  int      `json:"failed_count"`
 	Errors       []string `json:"errors,omitempty"`
 }
+
+// CreateTempConnection creates a temporary MinIO connection for migration
+func (s *MinIOService) CreateTempConnection(endpoint, accessKey, secretKey string) (*MinIOService, error) {
+	// Remove protocol if present
+	endpoint = strings.Replace(endpoint, "http://", "", 1)
+	endpoint = strings.Replace(endpoint, "https://", "", 1)
+	
+	client, err := minio.New(endpoint, &minio.Options{
+		Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
+		Secure: false, // Assume local network
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create MinIO client: %v", err)
+	}
+	
+	// Test connection
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	
+	_, err = client.ListBuckets(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to MinIO: %v", err)
+	}
+	
+	// Create temporary config
+	tempConfig := &config.Config{
+		MinioBucket: s.config.MinioBucket,
+	}
+	
+	return &MinIOService{
+		client: client,
+		config: tempConfig,
+	}, nil
+}
+
+// DownloadFile downloads a file from MinIO and returns the data
+func (s *MinIOService) DownloadFile(filename string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	
+	object, err := s.client.GetObject(ctx, s.config.MinioBucket, filename, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get object: %v", err)
+	}
+	defer object.Close()
+	
+	data, err := io.ReadAll(object)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read object data: %v", err)
+	}
+	
+	return data, nil
+}
+
+// MigratePolicies migrates bucket policies and ensures proper permissions
+func (s *MinIOService) MigratePolicies(sourceMinio *MinIOService) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	
+	bucketName := s.config.MinioBucket
+	
+	// Get source bucket policy
+	sourcePolicy, err := sourceMinio.client.GetBucketPolicy(ctx, bucketName)
+	if err != nil {
+		log.Printf("Warning: Could not get source bucket policy (this may be normal): %v", err)
+		// Continue with default policy setup
+	}
+	
+	// Ensure bucket exists in destination
+	if err := s.EnsureBucketExists(); err != nil {
+		return fmt.Errorf("failed to ensure bucket exists: %v", err)
+	}
+	
+	// Apply source policy to destination, or set default public read policy
+	if sourcePolicy != "" {
+		log.Printf("Applying source bucket policy to destination")
+		err = s.client.SetBucketPolicy(ctx, bucketName, sourcePolicy)
+		if err != nil {
+			log.Printf("Warning: Failed to set bucket policy: %v", err)
+		}
+	}
+	
+	// Set default public read policy for the bucket
+	publicReadPolicy := fmt.Sprintf(`{
+		"Version": "2012-10-17",
+		"Statement": [
+			{
+				"Effect": "Allow",
+				"Principal": {"AWS": "*"},
+				"Action": ["s3:GetObject"],
+				"Resource": ["arn:aws:s3:::%s/*"]
+			}
+		]
+	}`, bucketName)
+	
+	err = s.client.SetBucketPolicy(ctx, bucketName, publicReadPolicy)
+	if err != nil {
+		log.Printf("Warning: Failed to set public read policy: %v", err)
+	} else {
+		log.Printf("Applied public read policy to bucket: %s", bucketName)
+	}
+	
+	return nil
+}
