@@ -163,6 +163,26 @@ git push origin master  # Automatically starts monitoring
 - **Exact error details** when deployments fail  
 - **Recent deployment history** and status
 - **Direct links** to failed jobs and logs
+- **Pre-deployment verification** to reduce GitHub Actions costs
+
+### Cost-Saving Pre-Deployment Checks
+
+Avoid wasting GitHub Actions minutes by catching issues locally:
+
+```bash
+# Manual pre-deployment check
+./pre-deploy-check.sh   # Comprehensive Pi and environment verification
+
+# Automatic during push (when pushing to master)
+git push origin master  # Will prompt to run Pi checks before uploading
+```
+
+**What it checks:**
+- 🖥️ **Pi connectivity** (ping, SSH port, authentication)  
+- 🔧 **System readiness** (Docker running, project directory)
+- 📦 **Container registry access** and image availability
+- 🔑 **Environment variables** and configuration
+- 💾 **Disk space** and system resources
 
 ## Requirements
 

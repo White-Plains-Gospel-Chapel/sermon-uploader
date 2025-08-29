@@ -3,7 +3,39 @@ set -e
 
 echo "🚀 Running pre-push checks..."
 
+# Check if we're pushing to master/main - only then run Pi checks
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [ "$BRANCH" = "master" ] || [ "$BRANCH" = "main" ]; then
+  echo "🎯 Pushing to $BRANCH - running Pi deployment verification..."
+  
+  # Ask user if they want to run Pi checks (saves time for non-deployment pushes)
+  echo ""
+  echo "💰 Running Pi checks now saves GitHub Actions minutes!"
+  echo "🔍 Do you want to verify Pi connectivity before pushing? (Y/n)"
+  read -r -t 10 RESPONSE || RESPONSE="y"
+  
+  if [ "$RESPONSE" = "n" ] || [ "$RESPONSE" = "N" ]; then
+    echo "⚠️ Skipping Pi verification - deployment may fail in GitHub Actions"
+  else
+    echo "🔍 Running Pi verification..."
+    if [ -f "./pre-deploy-check.sh" ]; then
+      ./pre-deploy-check.sh || {
+        echo ""
+        echo "❌ Pi verification failed!"
+        echo "💰 This would have failed in GitHub Actions (costing money)"
+        echo "🔧 Fix the issues above before pushing"
+        exit 1
+      }
+    else
+      echo "⚠️ pre-deploy-check.sh not found, skipping Pi verification"
+    fi
+  fi
+else
+  echo "ℹ️ Not pushing to main branch, skipping Pi verification"
+fi
+
 # Additional checks before pushing to avoid deployment failures
+echo ""
 echo "🏗️ Performing comprehensive build test..."
 
 # Test Docker build completely (not just syntax)
