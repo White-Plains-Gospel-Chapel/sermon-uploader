@@ -87,7 +87,6 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          retry: 3
           network: host
         env:
           BUILDX_NO_DEFAULT_ATTESTATIONS: 1
