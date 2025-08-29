@@ -3,7 +3,7 @@
 
 services:
   sermon-uploader:
-    image: ghcr.io/yourusername/sermon-uploader:latest  # Will be updated by CI/CD
+    image: ghcr.io/white-plains-gospel-chapel/sermon-uploader:latest
     ports:
       - "${PORT:-8000}:8000"
     environment:
