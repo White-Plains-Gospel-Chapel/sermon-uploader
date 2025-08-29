@@ -7,9 +7,16 @@ echo "=================================================================="
 # Load environment variables if .env exists
 if [ -f ".env" ]; then
   echo "📋 Loading environment variables from .env..."
-  set -a
-  source .env
-  set +a
+  # Check if .env has any syntax issues before sourcing
+  if bash -n .env 2>/dev/null; then
+    set -a
+    source .env 2>/dev/null || {
+      echo "⚠️ Error loading .env file, using environment variables instead"
+    }
+    set +a
+  else
+    echo "⚠️ .env file has syntax errors, using environment variables instead"
+  fi
 else
   echo "⚠️ No .env file found - using environment variables"
 fi
