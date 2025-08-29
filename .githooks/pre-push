@@ -66,3 +66,17 @@ if command -v docker-compose >/dev/null 2>&1; then
 fi
 
 echo "✅ Pre-push checks passed - safe to deploy!"
+
+# Auto-start deployment monitoring in background after push
+echo ""
+echo "📺 Starting automatic deployment monitoring..."
+(
+  # Wait for push to complete and workflow to start
+  sleep 10
+  
+  echo ""
+  echo "🚀 Deployment monitoring started automatically..."
+  ./watch-deployment.sh
+) &
+echo "💡 Monitoring will start automatically in background after push completes"
+echo ""
