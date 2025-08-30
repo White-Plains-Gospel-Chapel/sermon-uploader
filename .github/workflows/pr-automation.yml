@@ -87,31 +87,116 @@ jobs:
     if: github.event.action == 'opened' || github.event.action == 'synchronize'
     runs-on: ubuntu-latest
     steps:
-    - name: Validate PR requirements
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: Detect PR type and validate
       run: |
         PR_NUMBER=${{ github.event.pull_request.number }}
         PR_BODY="${{ github.event.pull_request.body }}"
         PR_TITLE="${{ github.event.pull_request.title }}"
+        BASE_SHA="${{ github.event.pull_request.base.sha }}"
+        HEAD_SHA="${{ github.event.pull_request.head.sha }}"
         
-        echo "🔍 Validating PR #${PR_NUMBER}..."
+        echo "🔍 Analyzing PR #${PR_NUMBER}..."
         
+        # Detect PR type based on changed files
+        CHANGED_FILES=$(git diff --name-only $BASE_SHA..$HEAD_SHA 2>/dev/null || echo "")
+        
+        # Initialize PR type detection
+        HAS_CODE=false
+        HAS_DOCS=false
+        HAS_CONFIG=false
+        HAS_INFRA=false
+        
+        # Analyze changed files
+        while IFS= read -r file; do
+          if [[ "$file" =~ \.(go|js|ts|tsx|jsx|py|java|c|cpp|rs)$ ]]; then
+            HAS_CODE=true
+          elif [[ "$file" =~ \.(md|txt|rst)$ ]] || [[ "$file" =~ ^docs/ ]]; then
+            HAS_DOCS=true
+          elif [[ "$file" =~ \.(yml|yaml|json|toml|ini|conf)$ ]] || [[ "$file" =~ ^\.github/ ]]; then
+            HAS_CONFIG=true
+          elif [[ "$file" =~ (Dockerfile|docker-compose|\.sh$|Makefile) ]]; then
+            HAS_INFRA=true
+          fi
+        done <<< "$CHANGED_FILES"
+        
+        # Determine primary PR type
+        if [ "$HAS_CODE" = true ]; then
+          PR_TYPE="🔧 Code Change"
+          VALIDATION_TYPE="code"
+        elif [ "$HAS_INFRA" = true ]; then
+          PR_TYPE="🏗️ Infrastructure/Build"
+          VALIDATION_TYPE="infra"
+        elif [ "$HAS_CONFIG" = true ]; then
+          PR_TYPE="⚙️ Configuration"
+          VALIDATION_TYPE="config"
+        elif [ "$HAS_DOCS" = true ]; then
+          PR_TYPE="📚 Documentation"
+          VALIDATION_TYPE="docs"
+        else
+          PR_TYPE="🔄 Other"
+          VALIDATION_TYPE="other"
+        fi
+        
+        echo "Detected PR Type: $PR_TYPE"
+        
+        # Common validation
         VALIDATION_FAILED=false
         ISSUES=()
         
-        # Check if PR references an issue
+        # All PRs must reference an issue
         if ! echo "$PR_BODY" | grep -iE "(closes?|fixes?|resolves?) #[0-9]+" > /dev/null; then
           ISSUES+=("❌ PR must reference an issue (e.g., 'Closes #123')")
           VALIDATION_FAILED=true
         fi
         
-        # Check for implementation evidence
-        if ! echo "$PR_BODY" | grep -E "(test|verify|implement|complete)" > /dev/null; then
-          ISSUES+=("⚠️ PR should describe what was implemented/tested")
-        fi
+        # Type-specific validation
+        case "$VALIDATION_TYPE" in
+          code)
+            # Code changes need testing evidence
+            if ! echo "$PR_BODY" | grep -iE "(test|tested|testing|verify|verified)" > /dev/null; then
+              ISSUES+=("❌ Code changes must include testing evidence")
+              VALIDATION_FAILED=true
+            fi
+            if ! echo "$PR_BODY" | grep -iE "## (changes|implementation)" > /dev/null; then
+              ISSUES+=("⚠️ Should describe implementation details")
+            fi
+            ;;
+          
+          docs)
+            # Documentation changes are more lenient
+            if ! echo "$PR_BODY" | grep -iE "(document|update|clarify|explain|describe)" > /dev/null; then
+              ISSUES+=("⚠️ Should describe documentation changes")
+            fi
+            ;;
+          
+          config)
+            # Configuration changes need rationale
+            if ! echo "$PR_BODY" | grep -iE "(configure|setup|setting|enable|disable)" > /dev/null; then
+              ISSUES+=("⚠️ Should explain configuration changes")
+            fi
+            ;;
+          
+          infra)
+            # Infrastructure changes need impact assessment
+            if ! echo "$PR_BODY" | grep -iE "(deploy|build|infrastructure|docker|ci/cd)" > /dev/null; then
+              ISSUES+=("⚠️ Should describe infrastructure impact")
+            fi
+            ;;
+        esac
         
-        # Check for reviewer request
-        if ! echo "$PR_BODY" | grep -i "claude-code" > /dev/null; then
-          ISSUES+=("⚠️ PR should request @claude-code review")
+        # Check for reviewer request (warning only for non-code)
+        if ! echo "$PR_BODY" | grep -i "claude-code\|@greastern" > /dev/null; then
+          if [ "$VALIDATION_TYPE" = "code" ]; then
+            ISSUES+=("❌ Code PRs must request @claude-code or @greastern review")
+            VALIDATION_FAILED=true
+          else
+            ISSUES+=("⚠️ Consider requesting review from @claude-code or @greastern")
+          fi
         fi
         
         if [ "$VALIDATION_FAILED" = true ]; then
@@ -119,32 +204,83 @@ jobs:
           
           # Comment with issues
           COMMENT="🚨 **PR VALIDATION FAILED**
-
+        
+          **PR Type Detected**: $PR_TYPE
+          
           The following issues were found:
           $(printf '%s\n' "${ISSUES[@]}")
           
-          **Required PR Format**:
-          - Must reference issue: \`Closes #123\`
-          - Should describe implementation
-          - Should request @claude-code review
-          - Should include testing evidence
+          **Requirements for $PR_TYPE**:
+          - Must reference issue: \`Closes #123\`"
+          
+          case "$VALIDATION_TYPE" in
+            code)
+              COMMENT="$COMMENT
+          - Must include testing evidence
+          - Must request code review
+          - Should describe implementation"
+              ;;
+            docs)
+              COMMENT="$COMMENT
+          - Should describe what was documented
+          - Review is optional but recommended"
+              ;;
+            config)
+              COMMENT="$COMMENT
+          - Should explain configuration rationale
+          - Should describe impact"
+              ;;
+            infra)
+              COMMENT="$COMMENT
+          - Should describe infrastructure changes
+          - Should assess deployment impact"
+              ;;
+          esac
+          
+          COMMENT="$COMMENT
           
           Please update the PR description to address these issues."
           
           gh pr comment $PR_NUMBER --body "$COMMENT"
+          exit 1
         else
           echo "✅ PR validation passed"
           
-          # Add success comment
-          gh pr comment $PR_NUMBER --body "✅ **PR VALIDATION PASSED**
+          # Add success comment with type-specific info
+          COMMENT="✅ **PR VALIDATION PASSED**
           
-          PR meets basic requirements. Awaiting @claude-code review.
+          **PR Type**: $PR_TYPE
+          **Validation Level**: "
           
-          **Review Process**:
-          1. @claude-code will review code and implementation
-          2. Address any review feedback  
+          case "$VALIDATION_TYPE" in
+            code)
+              COMMENT="${COMMENT}Full code review required"
+              ;;
+            docs)
+              COMMENT="${COMMENT}Documentation review (expedited)"
+              ;;
+            config)
+              COMMENT="${COMMENT}Configuration review"
+              ;;
+            infra)
+              COMMENT="${COMMENT}Infrastructure review"
+              ;;
+            *)
+              COMMENT="${COMMENT}Standard review"
+              ;;
+          esac
+          
+          COMMENT="$COMMENT
+          
+          PR meets requirements for $PR_TYPE. Awaiting review.
+          
+          **Next Steps**:
+          1. Reviewer will assess changes
+          2. Address any feedback
           3. Get approval before merge
           4. Merge will auto-close related issue"
+          
+          gh pr comment $PR_NUMBER --body "$COMMENT"
         fi
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
