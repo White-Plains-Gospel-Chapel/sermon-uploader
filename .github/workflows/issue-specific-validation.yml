@@ -1,0 +1,233 @@
+name: Issue-Specific PR Validation
+
+on:
+  pull_request:
+    types: [opened, synchronize, edited]
+
+jobs:
+  issue-specific-validation:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: Extract issue number and validate
+      run: |
+        PR_NUMBER=${{ github.event.pull_request.number }}
+        PR_BODY="${{ github.event.pull_request.body }}"
+        PR_TITLE="${{ github.event.pull_request.title }}"
+        
+        # Extract issue number from PR body
+        ISSUE_NUM=$(echo "$PR_BODY" | grep -oiE "(closes?|fixes?|resolves?) #([0-9]+)" | grep -oE "[0-9]+" | head -1)
+        
+        if [ -z "$ISSUE_NUM" ]; then
+          echo "::warning::No issue reference found, skipping issue-specific validation"
+          exit 0
+        fi
+        
+        echo "🎯 Validating PR for Issue #${ISSUE_NUM}"
+        
+        VALIDATION_FAILED=false
+        REQUIREMENTS=()
+        MISSING=()
+        
+        # Issue-specific validation rules
+        case "$ISSUE_NUM" in
+          1)
+            # CloudFlare Tunnel Implementation
+            echo "📡 Validating CloudFlare Tunnel implementation..."
+            REQUIREMENTS+=("✓ CloudFlare tunnel configuration file")
+            REQUIREMENTS+=("✓ Tunnel authentication/credentials setup")
+            REQUIREMENTS+=("✓ Public URL testing evidence")
+            REQUIREMENTS+=("✓ No exposed ports verification")
+            
+            if ! echo "$PR_BODY" | grep -iE "(tunnel|cloudflare|cloudflared)" > /dev/null; then
+              MISSING+=("❌ Must mention CloudFlare tunnel configuration")
+              VALIDATION_FAILED=true
+            fi
+            
+            if ! echo "$PR_BODY" | grep -iE "(test.*url|public.*access|tunnel.*test)" > /dev/null; then
+              MISSING+=("❌ Must include public URL testing evidence")
+              VALIDATION_FAILED=true
+            fi
+            
+            if ! echo "$PR_BODY" | grep -iE "(no.*port|port.*closed|zero.*exposure)" > /dev/null; then
+              MISSING+=("⚠️ Should verify no ports are exposed")
+            fi
+            ;;
+            
+          2)
+            # VPN Configuration
+            echo "🔐 Validating VPN configuration..."
+            REQUIREMENTS+=("✓ VPN connection testing from external network")
+            REQUIREMENTS+=("✓ Admin access verification")
+            REQUIREMENTS+=("✓ Network routing documentation")
+            
+            if ! echo "$PR_BODY" | grep -iE "(vpn|teleport|identity|route)" > /dev/null; then
+              MISSING+=("❌ Must document VPN configuration")
+              VALIDATION_FAILED=true
+            fi
+            
+            if ! echo "$PR_BODY" | grep -iE "(test|verified|working|success)" > /dev/null; then
+              MISSING+=("⚠️ Should include testing verification")
+            fi
+            ;;
+            
+          3)
+            # Webhook Deployment System
+            echo "🪝 Validating webhook deployment..."
+            REQUIREMENTS+=("✓ Webhook security configuration (secret)")
+            REQUIREMENTS+=("✓ Systemd service configuration")
+            REQUIREMENTS+=("✓ GitHub Actions workflow update")
+            REQUIREMENTS+=("✓ Deployment testing evidence")
+            
+            if ! echo "$PR_BODY" | grep -iE "(webhook.*secret|hmac|signature.*verif)" > /dev/null; then
+              MISSING+=("❌ Must include webhook security (secret/HMAC)")
+              VALIDATION_FAILED=true
+            fi
+            
+            if ! echo "$PR_BODY" | grep -iE "(systemd|service|daemon)" > /dev/null; then
+              MISSING+=("❌ Must configure systemd service")
+              VALIDATION_FAILED=true
+            fi
+            
+            if ! echo "$PR_BODY" | grep -iE "(github.*action|workflow|\.github)" > /dev/null; then
+              MISSING+=("❌ Must update GitHub Actions workflow")
+              VALIDATION_FAILED=true
+            fi
+            
+            if ! echo "$PR_BODY" | grep -iE "(deploy.*test|test.*deploy|deployment.*work)" > /dev/null; then
+              MISSING+=("❌ Must include deployment testing evidence")
+              VALIDATION_FAILED=true
+            fi
+            ;;
+            
+          4)
+            # Install cloudflared on Pi
+            echo "💿 Validating cloudflared installation..."
+            REQUIREMENTS+=("✓ Installation commands/script")
+            REQUIREMENTS+=("✓ Service configuration")
+            REQUIREMENTS+=("✓ Version verification")
+            
+            if ! echo "$PR_BODY" | grep -iE "(install|apt|dpkg|cloudflared)" > /dev/null; then
+              MISSING+=("❌ Must show installation process")
+              VALIDATION_FAILED=true
+            fi
+            
+            if ! echo "$PR_BODY" | grep -iE "(version|cloudflared.*version)" > /dev/null; then
+              MISSING+=("⚠️ Should verify installed version")
+            fi
+            ;;
+            
+          5)
+            # Create CloudFlare tunnel service
+            echo "🚇 Validating tunnel service creation..."
+            REQUIREMENTS+=("✓ Tunnel creation command")
+            REQUIREMENTS+=("✓ Service configuration file")
+            REQUIREMENTS+=("✓ Tunnel ID/credentials")
+            
+            if ! echo "$PR_BODY" | grep -iE "(tunnel.*create|cloudflared.*tunnel)" > /dev/null; then
+              MISSING+=("❌ Must show tunnel creation")
+              VALIDATION_FAILED=true
+            fi
+            
+            if ! echo "$PR_BODY" | grep -iE "(config|yml|yaml|ingress)" > /dev/null; then
+              MISSING+=("❌ Must include tunnel configuration")
+              VALIDATION_FAILED=true
+            fi
+            ;;
+            
+          6|7)
+            # VPN sub-tasks
+            echo "🔑 Validating VPN sub-task..."
+            REQUIREMENTS+=("✓ UDM Pro configuration steps")
+            REQUIREMENTS+=("✓ Client device setup")
+            REQUIREMENTS+=("✓ Connection testing")
+            
+            if ! echo "$PR_BODY" | grep -iE "(udm|unifi|vpn.*config)" > /dev/null; then
+              MISSING+=("⚠️ Should document UDM Pro configuration")
+            fi
+            ;;
+            
+          8|9|10)
+            # Webhook sub-tasks
+            echo "⚙️ Validating webhook sub-task..."
+            REQUIREMENTS+=("✓ Installation/configuration steps")
+            REQUIREMENTS+=("✓ Security implementation")
+            REQUIREMENTS+=("✓ Testing verification")
+            
+            if ! echo "$PR_BODY" | grep -iE "(webhook|deploy|github.*webhook)" > /dev/null; then
+              MISSING+=("❌ Must reference webhook implementation")
+              VALIDATION_FAILED=true
+            fi
+            ;;
+            
+          11)
+            # Integration Testing
+            echo "🧪 Validating integration testing..."
+            REQUIREMENTS+=("✓ End-to-end test execution")
+            REQUIREMENTS+=("✓ All components verified")
+            REQUIREMENTS+=("✓ Performance metrics")
+            REQUIREMENTS+=("✓ Security validation")
+            
+            if ! echo "$PR_BODY" | grep -iE "(end.to.end|e2e|integration|full.*test)" > /dev/null; then
+              MISSING+=("❌ Must include end-to-end testing")
+              VALIDATION_FAILED=true
+            fi
+            
+            if ! echo "$PR_BODY" | grep -iE "(performance|latency|response.*time)" > /dev/null; then
+              MISSING+=("⚠️ Should include performance metrics")
+            fi
+            
+            if ! echo "$PR_BODY" | grep -iE "(security|vulnerab|scan|pentest)" > /dev/null; then
+              MISSING+=("⚠️ Should include security validation")
+            fi
+            ;;
+            
+          *)
+            echo "ℹ️ No specific validation rules for Issue #${ISSUE_NUM}"
+            ;;
+        esac
+        
+        # Generate validation report
+        if [ ${#REQUIREMENTS[@]} -gt 0 ] || [ "$VALIDATION_FAILED" = true ]; then
+          
+          if [ "$VALIDATION_FAILED" = true ]; then
+            COMMENT="## 🚨 Issue-Specific Validation Failed
+            
+        **Issue #${ISSUE_NUM}** has specific requirements that must be met.
+        
+        ### Required for this issue:
+        $(printf '%s\n' "${REQUIREMENTS[@]}")
+        
+        ### Missing/Issues found:
+        $(printf '%s\n' "${MISSING[@]}")
+        
+        Please update your PR to address these requirements."
+            
+            gh pr comment $PR_NUMBER --body "$COMMENT"
+            echo "::error::Issue-specific validation failed for Issue #${ISSUE_NUM}"
+            exit 1
+          else
+            COMMENT="## ✅ Issue-Specific Validation Passed
+            
+        **Issue #${ISSUE_NUM}** requirements verified!
+        
+        ### Validated requirements:
+        $(printf '%s\n' "${REQUIREMENTS[@]}")
+        
+        $(if [ ${#MISSING[@]} -gt 0 ]; then
+          echo "### Suggestions (non-blocking):"
+          printf '%s\n' "${MISSING[@]}"
+        fi)
+        
+        PR meets the specific requirements for this issue."
+            
+            gh pr comment $PR_NUMBER --body "$COMMENT"
+            echo "✅ Issue-specific validation passed"
+          fi
+        fi
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
