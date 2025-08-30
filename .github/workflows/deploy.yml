@@ -3,8 +3,27 @@ name: Deploy to Raspberry Pi
 on:
   push:
     branches: [main, master]
+    paths:
+      # Only deploy on actual code/app changes, not docs/config
+      - 'backend/**'
+      - 'frontend/**'
+      - 'Dockerfile'
+      - 'docker-compose.yml'
+      - '.github/workflows/deploy.yml'
+      - 'package.json'
+      - 'go.mod'
+      - 'start.sh'
   pull_request:
     branches: [main, master]
+    types: [opened, synchronize]
+    paths:
+      # Only test deployment on code changes
+      - 'backend/**'
+      - 'frontend/**'
+      - 'Dockerfile'
+      - 'docker-compose.yml'
+  workflow_dispatch:
+    # Manual trigger option
 
 env:
   REGISTRY: ghcr.io

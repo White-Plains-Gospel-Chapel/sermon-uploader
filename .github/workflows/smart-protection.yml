@@ -4,6 +4,7 @@ on:
   pull_request:
     types: [opened, synchronize]
     branches: [master]
+  # Don't run on direct pushes to master - only on PRs
 
 jobs:
   analyze-changes:
