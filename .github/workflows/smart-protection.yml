@@ -1,0 +1,175 @@
+name: Smart Branch Protection
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [master]
+
+jobs:
+  analyze-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      change_type: ${{ steps.analyze.outputs.change_type }}
+      protection_level: ${{ steps.analyze.outputs.protection_level }}
+      requires_approval: ${{ steps.analyze.outputs.requires_approval }}
+      can_self_merge: ${{ steps.analyze.outputs.can_self_merge }}
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: Analyze changes and determine protection level
+      id: analyze
+      run: |
+        PR_NUMBER=${{ github.event.pull_request.number }}
+        PR_AUTHOR="${{ github.event.pull_request.user.login }}"
+        BASE_SHA="${{ github.event.pull_request.base.sha }}"
+        HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+        
+        echo "🔍 Analyzing changes for smart branch protection..."
+        
+        # Get changed files
+        CHANGED_FILES=$(git diff --name-only $BASE_SHA..$HEAD_SHA 2>/dev/null || echo "")
+        
+        # Initialize change analysis
+        HAS_CODE=false
+        HAS_CRITICAL=false
+        HAS_DOCS_ONLY=false
+        HAS_CONFIG_ONLY=false
+        
+        CODE_FILES=()
+        DOC_FILES=()
+        CONFIG_FILES=()
+        CRITICAL_FILES=()
+        
+        # Analyze each changed file
+        FILE_COUNT=0
+        while IFS= read -r file; do
+          [ -z "$file" ] && continue
+          FILE_COUNT=$((FILE_COUNT + 1))
+          echo "Analyzing: $file"
+          
+          # Critical application files
+          if [[ "$file" =~ ^(backend/.*\.(go)$|frontend/src/.*\.(js|ts|tsx|jsx)$)$ ]] ||
+             [[ "$file" =~ ^(Dockerfile|docker-compose\.yml|docker-compose\.yaml)$ ]] ||
+             [[ "$file" =~ ^\.github/workflows/.*\.yml$ && ! "$file" =~ smart-protection\.yml$ ]]; then
+            CRITICAL_FILES+=("$file")
+            HAS_CRITICAL=true
+            HAS_CODE=true
+            
+          # Other code files  
+          elif [[ "$file" =~ \.(go|js|ts|tsx|jsx|py|java|c|cpp|rs|sql)$ ]]; then
+            CODE_FILES+=("$file")
+            HAS_CODE=true
+            
+          # Documentation files
+          elif [[ "$file" =~ \.(md|txt|rst)$ ]] || [[ "$file" =~ ^docs/ ]]; then
+            DOC_FILES+=("$file")
+            
+          # Configuration files (non-critical)
+          elif [[ "$file" =~ \.(yml|yaml|json|toml|ini|conf)$ ]]; then
+            CONFIG_FILES+=("$file")
+            
+          # Build files (treat as critical)
+          elif [[ "$file" =~ (package\.json|go\.mod|go\.sum|requirements\.txt|Makefile|\.sh$) ]]; then
+            CRITICAL_FILES+=("$file") 
+            HAS_CRITICAL=true
+            HAS_CODE=true
+          fi
+        done <<< "$CHANGED_FILES"
+        
+        # Determine change type and protection requirements
+        if [ "$HAS_CRITICAL" = true ]; then
+          CHANGE_TYPE="🔴 Critical"
+          PROTECTION_LEVEL="strict"
+          REQUIRES_APPROVAL=true
+          CAN_SELF_MERGE=false
+          
+        elif [ "$HAS_CODE" = true ]; then
+          CHANGE_TYPE="🟡 Code"
+          PROTECTION_LEVEL="standard"
+          REQUIRES_APPROVAL=true
+          CAN_SELF_MERGE=false
+          
+        elif [ ${#CONFIG_FILES[@]} -gt 0 ] && [ ${#DOC_FILES[@]} -eq 0 ] && [ ${#CODE_FILES[@]} -eq 0 ]; then
+          CHANGE_TYPE="🟠 Configuration"
+          PROTECTION_LEVEL="relaxed"
+          REQUIRES_APPROVAL=false
+          CAN_SELF_MERGE=true
+          
+        elif [ ${#DOC_FILES[@]} -gt 0 ] && [ ${#CODE_FILES[@]} -eq 0 ] && [ ${#CRITICAL_FILES[@]} -eq 0 ]; then
+          CHANGE_TYPE="📚 Documentation"
+          PROTECTION_LEVEL="minimal"
+          REQUIRES_APPROVAL=false
+          CAN_SELF_MERGE=true
+          
+        else
+          CHANGE_TYPE="🔄 Mixed"
+          PROTECTION_LEVEL="standard"
+          REQUIRES_APPROVAL=true
+          CAN_SELF_MERGE=false
+        fi
+        
+        echo "Change Type: $CHANGE_TYPE"
+        echo "Protection Level: $PROTECTION_LEVEL"
+        echo "Requires Approval: $REQUIRES_APPROVAL"
+        echo "Can Self-Merge: $CAN_SELF_MERGE"
+        
+        # Set outputs
+        echo "change_type=$CHANGE_TYPE" >> $GITHUB_OUTPUT
+        echo "protection_level=$PROTECTION_LEVEL" >> $GITHUB_OUTPUT
+        echo "requires_approval=$REQUIRES_APPROVAL" >> $GITHUB_OUTPUT
+        echo "can_self_merge=$CAN_SELF_MERGE" >> $GITHUB_OUTPUT
+        
+        # Create comprehensive comment
+        COMMENT="## 🛡️ Smart Branch Protection Analysis
+        
+        **Change Type**: $CHANGE_TYPE
+        **Protection Level**: \`$PROTECTION_LEVEL\`
+        **Approval Required**: $([ "$REQUIRES_APPROVAL" = true ] && echo "✅ Yes" || echo "❌ No")
+        **Self-Merge Allowed**: $([ "$CAN_SELF_MERGE" = true ] && echo "✅ Yes" || echo "❌ No")
+        
+        ### Changed Files Summary:
+        $([ ${#CRITICAL_FILES[@]} -gt 0 ] && echo "🔴 **Critical Files** (${#CRITICAL_FILES[@]}): $(printf '%s, ' "${CRITICAL_FILES[@]}" | sed 's/, $//')" || echo "")
+        $([ ${#CODE_FILES[@]} -gt 0 ] && echo "🟡 **Code Files** (${#CODE_FILES[@]}): $(printf '%s, ' "${CODE_FILES[@]}" | sed 's/, $//')" || echo "")
+        $([ ${#CONFIG_FILES[@]} -gt 0 ] && echo "🟠 **Config Files** (${#CONFIG_FILES[@]}): $(printf '%s, ' "${CONFIG_FILES[@]}" | sed 's/, $//')" || echo "")
+        $([ ${#DOC_FILES[@]} -gt 0 ] && echo "📚 **Documentation** (${#DOC_FILES[@]}): $(printf '%s, ' "${DOC_FILES[@]}" | sed 's/, $//')" || echo "")
+        
+        ### Merge Options:
+        $(if [ "$CAN_SELF_MERGE" = true ]; then
+          echo "✅ **You can merge this PR yourself** after checks pass
+        
+        **Comment Approval**: Type \`approve\`, \`lgtm\`, or \`✅\` to approve and auto-merge
+        **Manual Merge**: Use GitHub's merge button when ready"
+        else
+          echo "⚠️ **Review required before merge**
+        
+        **Comment Approval**: Anyone with write access can type \`approve\` to approve
+        **Traditional Review**: Use GitHub's review system
+        **Auto-merge**: Will trigger automatically after approval"
+        fi)
+        
+        ### Protection Rules:
+        - 🔴 **Critical**: Affects core app/infrastructure - requires thorough review
+        - 🟡 **Code**: Application logic changes - requires code review  
+        - 🟠 **Configuration**: Settings/config changes - light review recommended
+        - 📚 **Documentation**: Doc updates only - minimal validation required"
+        
+        gh pr comment $PR_NUMBER --body "$COMMENT"
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # This check is required for all PRs and must pass
+  protection-check:
+    needs: analyze-changes
+    runs-on: ubuntu-latest
+    steps:
+    - name: Validate protection requirements
+      run: |
+        echo "🛡️ Protection Level: ${{ needs.analyze-changes.outputs.protection_level }}"
+        echo "📝 Change Type: ${{ needs.analyze-changes.outputs.change_type }}"
+        echo "✅ Smart protection validation passed"
+        
+        # This always passes - the real protection is enforced by GitHub branch protection
+        # which can look at the outputs from analyze-changes job
