@@ -339,11 +339,44 @@ jobs:
 
         **Status**: ✅ PR meets the specific requirements for this issue!"
           
-          # Auto-link related issues if appropriate
+          # Auto-link related issues and wiki pages
           if [ -n "$PARENT_ISSUE" ]; then
             gh issue comment $PARENT_ISSUE --body "🔗 **Sub-task Progress**: PR #${PR_NUMBER} addresses Issue #${ISSUE_NUM}
             
         Related implementation is ready for review." 2>/dev/null || true
+          fi
+          
+          # Add wiki documentation links
+          WIKI_LINKS=""
+          case "$ISSUE_NUM" in
+            1)
+              WIKI_LINKS="📚 **Wiki Documentation**: [CloudFlare Tunnel Setup](https://github.com/White-Plains-Gospel-Chapel/sermon-uploader/wiki/CloudFlare-Tunnel-Setup)"
+              ;;
+            2)
+              WIKI_LINKS="📚 **Wiki Documentation**: [VPN Admin Access](https://github.com/White-Plains-Gospel-Chapel/sermon-uploader/wiki/VPN-Admin-Access)"
+              ;;
+            3)
+              WIKI_LINKS="📚 **Wiki Documentation**: [Webhook Deployment](https://github.com/White-Plains-Gospel-Chapel/sermon-uploader/wiki/Webhook-Deployment)"
+              ;;
+            11)
+              WIKI_LINKS="📚 **Wiki Documentation**: [Integration Testing](https://github.com/White-Plains-Gospel-Chapel/sermon-uploader/wiki/Integration-Testing)"
+              ;;
+            4|5)
+              WIKI_LINKS="📚 **Wiki Documentation**: [CloudFlare Tunnel Setup](https://github.com/White-Plains-Gospel-Chapel/sermon-uploader/wiki/CloudFlare-Tunnel-Setup)"
+              ;;
+            6|7)
+              WIKI_LINKS="📚 **Wiki Documentation**: [VPN Admin Access](https://github.com/White-Plains-Gospel-Chapel/sermon-uploader/wiki/VPN-Admin-Access)"
+              ;;
+            8|9|10)
+              WIKI_LINKS="📚 **Wiki Documentation**: [Webhook Deployment](https://github.com/White-Plains-Gospel-Chapel/sermon-uploader/wiki/Webhook-Deployment)"
+              ;;
+          esac
+          
+          if [ -n "$WIKI_LINKS" ]; then
+            COMMENT_BODY="$COMMENT_BODY
+
+        $WIKI_LINKS
+        🔐 **Private Details**: See [Private Documentation Index](https://github.com/White-Plains-Gospel-Chapel/sermon-uploader/wiki/Private-Documentation-Index) for sensitive implementation details."
           fi
         fi
         
