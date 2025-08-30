@@ -1,0 +1,17 @@
+# Global owners for all files
+* @greastern
+
+# Workflow and configuration files require review
+.github/ @greastern
+.github/workflows/ @greastern
+.github/ISSUE_TEMPLATE/ @greastern
+
+# Docker and deployment files require review  
+docker-compose*.yml @greastern
+Dockerfile @greastern
+pre-deploy-check.sh @greastern
+setup-ssh-key.sh @greastern
+
+# Environment and configuration
+.env @greastern
+.gitignore @greastern

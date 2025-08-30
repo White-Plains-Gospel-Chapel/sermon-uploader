@@ -1,0 +1,85 @@
+name: Issue Verification Checker
+
+on:
+  issue_comment:
+    types: [created, edited]
+  issues:
+    types: [closed]
+
+jobs:
+  verify-completion:
+    if: contains(github.event.comment.body, '@claude-code Ready for review') || github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Check if issue closed without approval
+      if: github.event.action == 'closed'
+      run: |
+        echo "🔍 Checking if issue #${{ github.event.issue.number }} was properly approved..."
+        
+        # Get issue comments to check for approval
+        COMMENTS=$(gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments --jq '.[].body')
+        
+        if echo "$COMMENTS" | grep -q "✅.*APPROVED.*Task verified complete"; then
+          echo "✅ Issue properly approved by reviewer"
+        else
+          echo "❌ WARNING: Issue closed without proper approval!"
+          echo "::error::Issue #${{ github.event.issue.number }} was closed without reviewer approval"
+          
+          # Reopen the issue with warning comment
+          gh issue reopen ${{ github.event.issue.number }}
+          gh issue comment ${{ github.event.issue.number }} --body "🚨 **AUTOMATED REOPENING**
+          
+          This issue was closed without proper reviewer approval. 
+          
+          **Required process:**
+          1. @${{ github.event.issue.assignee.login }} comment: '@claude-code Ready for review' + verification evidence
+          2. @claude-code reviews and approves with: '✅ **APPROVED** - Task verified complete'
+          3. Only then can the issue be closed
+          
+          Please follow the review process before closing."
+        fi
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Acknowledge review request
+      if: contains(github.event.comment.body, '@claude-code Ready for review')
+      run: |
+        echo "📝 Review requested for issue #${{ github.event.issue.number }}"
+        
+        # Add acknowledgment comment
+        gh issue comment ${{ github.event.issue.number }} --body "🔍 **REVIEW REQUEST RECEIVED**
+        
+        @claude-code has been notified to review this task.
+        
+        **Status**: Pending verification
+        **Reviewer**: @claude-code  
+        **Next**: Waiting for detailed verification and approval
+        
+        Issue will remain open until approved with: '✅ **APPROVED** - Task verified complete'"
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Check for required evidence
+      if: contains(github.event.comment.body, '@claude-code Ready for review')
+      run: |
+        COMMENT_BODY="${{ github.event.comment.body }}"
+        ISSUE_NUM=${{ github.event.issue.number }}
+        
+        # Check if comment contains evidence (command outputs)
+        if echo "$COMMENT_BODY" | grep -E '(```|`[^`]+`|\$ )' > /dev/null; then
+          echo "✅ Comment contains command outputs/evidence"
+        else
+          echo "⚠️ Comment lacks verification evidence"
+          gh issue comment $ISSUE_NUM --body "⚠️ **INCOMPLETE REVIEW REQUEST**
+          
+          Please provide verification evidence such as:
+          - Command outputs (\`which cloudflared\`, \`systemctl status\`, etc.)
+          - Screenshots of working functionality  
+          - Log outputs showing successful operation
+          - Configuration file contents
+          
+          Tag @claude-code again when evidence is provided."
+        fi
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
