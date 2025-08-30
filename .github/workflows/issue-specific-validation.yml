@@ -29,6 +29,77 @@ jobs:
         
         echo "🎯 Validating PR for Issue #${ISSUE_NUM}"
         
+        # Check for issue dependencies and linking
+        echo "🔗 Checking issue dependencies..."
+        
+        # Get issue details and check for dependency labels/content
+        ISSUE_DETAILS=$(gh issue view $ISSUE_NUM --json body,labels,title)
+        ISSUE_LABELS=$(echo "$ISSUE_DETAILS" | jq -r '.labels[].name' | tr '\n' ',' | sed 's/,$//')
+        ISSUE_TITLE_TEXT=$(echo "$ISSUE_DETAILS" | jq -r '.title')
+        ISSUE_BODY_TEXT=$(echo "$ISSUE_DETAILS" | jq -r '.body // ""')
+        
+        echo "Issue labels: $ISSUE_LABELS"
+        
+        # Check if this is a sub-task
+        IS_SUBTASK=false
+        PARENT_ISSUE=""
+        DEPENDENCIES=()
+        
+        if [[ "$ISSUE_TITLE_TEXT" =~ ^Sub-task: ]]; then
+          IS_SUBTASK=true
+          echo "📋 This is a sub-task"
+          
+          # Extract parent issue from sub-task patterns
+          case "$ISSUE_NUM" in
+            4|5) PARENT_ISSUE="1" ;;  # CloudFlare sub-tasks
+            6|7) PARENT_ISSUE="2" ;;  # VPN sub-tasks  
+            8|9|10) PARENT_ISSUE="3" ;; # Webhook sub-tasks
+            11) DEPENDENCIES=("1" "2" "3") ;; # Integration testing depends on all main issues
+          esac
+        fi
+        
+        # Check dependencies if this is a sub-task or has dependencies
+        if [ -n "$PARENT_ISSUE" ]; then
+          echo "🔍 Checking parent issue #${PARENT_ISSUE} status..."
+          PARENT_STATUS=$(gh issue view $PARENT_ISSUE --json state | jq -r '.state')
+          if [ "$PARENT_STATUS" = "open" ]; then
+            echo "⚠️ Parent issue #${PARENT_ISSUE} is still open"
+            # This is informational, not blocking
+          fi
+        fi
+        
+        if [ ${#DEPENDENCIES[@]} -gt 0 ]; then
+          echo "🔍 Checking dependency issues: ${DEPENDENCIES[*]}..."
+          UNRESOLVED_DEPS=()
+          for dep in "${DEPENDENCIES[@]}"; do
+            DEP_STATUS=$(gh issue view $dep --json state | jq -r '.state')
+            if [ "$DEP_STATUS" = "open" ]; then
+              UNRESOLVED_DEPS+=("#$dep")
+            fi
+          done
+          
+          if [ ${#UNRESOLVED_DEPS[@]} -gt 0 ]; then
+            echo "⚠️ Some dependencies are still open: ${UNRESOLVED_DEPS[*]}"
+            # For integration testing, this should be blocking
+            if [ "$ISSUE_NUM" = "11" ]; then
+              MISSING+=("❌ Dependencies must be resolved first: ${UNRESOLVED_DEPS[*]}")
+              VALIDATION_FAILED=true
+            fi
+          fi
+        fi
+        
+        # Check if this PR needs more information
+        NEEDS_MORE_INFO=false
+        if echo "$PR_BODY" | grep -iE "(need.*more|insufficient.*detail|unclear|please.*clarify)" > /dev/null; then
+          NEEDS_MORE_INFO=true
+        fi
+        
+        # Check for related issue references
+        RELATED_ISSUES=$(echo "$PR_BODY" | grep -oiE "(relates? to|related|see also|depends on) #([0-9]+)" | grep -oE "[0-9]+" || true)
+        if [ -n "$RELATED_ISSUES" ]; then
+          echo "🔗 Found related issues: $(echo $RELATED_ISSUES | tr '\n' ',' | sed 's/,$//')"
+        fi
+        
         VALIDATION_FAILED=false
         REQUIREMENTS=()
         MISSING=()
@@ -191,43 +262,103 @@ jobs:
             ;;
         esac
         
-        # Generate validation report
-        if [ ${#REQUIREMENTS[@]} -gt 0 ] || [ "$VALIDATION_FAILED" = true ]; then
-          
-          if [ "$VALIDATION_FAILED" = true ]; then
-            COMMENT="## 🚨 Issue-Specific Validation Failed
-            
-        **Issue #${ISSUE_NUM}** has specific requirements that must be met.
+        # Generate comprehensive validation report
+        COMMENT_HEADER=""
+        COMMENT_BODY=""
         
-        ### Required for this issue:
-        $(printf '%s\n' "${REQUIREMENTS[@]}")
+        if [ "$VALIDATION_FAILED" = true ]; then
+          COMMENT_HEADER="## 🚨 Issue-Specific Validation Failed"
+        elif [ "$NEEDS_MORE_INFO" = true ]; then
+          COMMENT_HEADER="## ℹ️ More Information Needed"
+        else
+          COMMENT_HEADER="## ✅ Issue-Specific Validation Passed"
+        fi
         
-        ### Missing/Issues found:
-        $(printf '%s\n' "${MISSING[@]}")
+        COMMENT_BODY="**Issue #${ISSUE_NUM}**: $ISSUE_TITLE_TEXT"
         
-        Please update your PR to address these requirements."
-            
-            gh pr comment $PR_NUMBER --body "$COMMENT"
-            echo "::error::Issue-specific validation failed for Issue #${ISSUE_NUM}"
-            exit 1
-          else
-            COMMENT="## ✅ Issue-Specific Validation Passed
-            
-        **Issue #${ISSUE_NUM}** requirements verified!
-        
-        ### Validated requirements:
-        $(printf '%s\n' "${REQUIREMENTS[@]}")
-        
-        $(if [ ${#MISSING[@]} -gt 0 ]; then
-          echo "### Suggestions (non-blocking):"
-          printf '%s\n' "${MISSING[@]}"
-        fi)
-        
-        PR meets the specific requirements for this issue."
-            
-            gh pr comment $PR_NUMBER --body "$COMMENT"
-            echo "✅ Issue-specific validation passed"
+        # Add issue type info
+        if [ "$IS_SUBTASK" = true ]; then
+          COMMENT_BODY="$COMMENT_BODY
+        **Type**: Sub-task"
+          if [ -n "$PARENT_ISSUE" ]; then
+            PARENT_TITLE=$(gh issue view $PARENT_ISSUE --json title | jq -r '.title')
+            COMMENT_BODY="$COMMENT_BODY
+        **Parent Issue**: #${PARENT_ISSUE} - $PARENT_TITLE"
           fi
+        fi
+        
+        # Add dependency information
+        if [ ${#DEPENDENCIES[@]} -gt 0 ]; then
+          COMMENT_BODY="$COMMENT_BODY
+        **Dependencies**: Issues #$(printf '#%s ' "${DEPENDENCIES[@]}" | sed 's/ $//')"
+          if [ ${#UNRESOLVED_DEPS[@]} -gt 0 ]; then
+            COMMENT_BODY="$COMMENT_BODY
+        ⚠️ **Unresolved Dependencies**: ${UNRESOLVED_DEPS[*]}"
+          fi
+        fi
+        
+        # Add related issues
+        if [ -n "$RELATED_ISSUES" ]; then
+          COMMENT_BODY="$COMMENT_BODY
+        **Related Issues**: #$(echo $RELATED_ISSUES | sed 's/ /, #/g')"
+        fi
+        
+        # Add requirements and validation results
+        if [ ${#REQUIREMENTS[@]} -gt 0 ]; then
+          COMMENT_BODY="$COMMENT_BODY
+
+        ### Requirements for this issue:
+        $(printf '%s\n' "${REQUIREMENTS[@]}")"
+        fi
+        
+        if [ ${#MISSING[@]} -gt 0 ]; then
+          if [ "$VALIDATION_FAILED" = true ]; then
+            COMMENT_BODY="$COMMENT_BODY
+
+        ### Issues found (must fix):
+        $(printf '%s\n' "${MISSING[@]}")"
+          else
+            COMMENT_BODY="$COMMENT_BODY
+
+        ### Suggestions (non-blocking):
+        $(printf '%s\n' "${MISSING[@]}")"
+          fi
+        fi
+        
+        # Add next steps
+        if [ "$VALIDATION_FAILED" = true ]; then
+          COMMENT_BODY="$COMMENT_BODY
+
+        **Next Steps**: Please update your PR to address the issues above."
+        elif [ "$NEEDS_MORE_INFO" = true ]; then
+          COMMENT_BODY="$COMMENT_BODY
+
+        **Next Steps**: Please provide additional information or clarification as requested."
+        else
+          COMMENT_BODY="$COMMENT_BODY
+
+        **Status**: ✅ PR meets the specific requirements for this issue!"
+          
+          # Auto-link related issues if appropriate
+          if [ -n "$PARENT_ISSUE" ]; then
+            gh issue comment $PARENT_ISSUE --body "🔗 **Sub-task Progress**: PR #${PR_NUMBER} addresses Issue #${ISSUE_NUM}
+            
+        Related implementation is ready for review." 2>/dev/null || true
+          fi
+        fi
+        
+        # Post the comment
+        FULL_COMMENT="$COMMENT_HEADER
+
+        $COMMENT_BODY"
+        
+        gh pr comment $PR_NUMBER --body "$FULL_COMMENT"
+        
+        if [ "$VALIDATION_FAILED" = true ]; then
+          echo "::error::Issue-specific validation failed for Issue #${ISSUE_NUM}"
+          exit 1
+        else
+          echo "✅ Issue-specific validation completed for Issue #${ISSUE_NUM}"
         fi
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
