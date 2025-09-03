@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
 // GeneratePresignedUploadURL creates a presigned URL for direct upload to MinIO
@@ -15,17 +16,29 @@ func (m *MinIOService) GeneratePresignedUploadURL(filename string, expiry time.D
 		return "", err
 	}
 
-	// Generate presigned PUT URL
-	presignedURL, err := m.client.PresignedPutObject(
-		context.Background(),
-		m.config.MinioBucket,
-		filename, // Store in wav directory
-		expiry,
-	)
+	ctx := context.Background()
+
+	// If a public endpoint is configured, generate the signature against that host
+	if m.config.PublicMinIOEndpoint != "" {
+		pubClient, err := minio.New(m.config.PublicMinIOEndpoint, &minio.Options{
+			Creds:  credentials.NewStaticV4(m.config.MinIOAccessKey, m.config.MinIOSecretKey, ""),
+			Secure: m.config.PublicMinIOSecure,
+		})
+		if err != nil {
+			return "", err
+		}
+		presignedURL, err := pubClient.PresignedPutObject(ctx, m.config.MinioBucket, filename, expiry)
+		if err != nil {
+			return "", err
+		}
+		return presignedURL.String(), nil
+	}
+
+	// Default: use internal client/endpoint
+	presignedURL, err := m.client.PresignedPutObject(ctx, m.config.MinioBucket, filename, expiry)
 	if err != nil {
 		return "", err
 	}
-
 	return presignedURL.String(), nil
 }
 
@@ -63,16 +76,26 @@ func (m *MinIOService) GetFileInfo(filename string) (*minio.ObjectInfo, error) {
 // GeneratePresignedDownloadURL creates a presigned URL for downloading
 func (m *MinIOService) GeneratePresignedDownloadURL(filename string, expiry time.Duration) (string, error) {
 	reqParams := make(url.Values)
-	presignedURL, err := m.client.PresignedGetObject(
-		context.Background(),
-		m.config.MinioBucket,
-		filename,
-		expiry,
-		reqParams,
-	)
+	ctx := context.Background()
+
+	if m.config.PublicMinIOEndpoint != "" {
+		pubClient, err := minio.New(m.config.PublicMinIOEndpoint, &minio.Options{
+			Creds:  credentials.NewStaticV4(m.config.MinIOAccessKey, m.config.MinIOSecretKey, ""),
+			Secure: m.config.PublicMinIOSecure,
+		})
+		if err != nil {
+			return "", err
+		}
+		presignedURL, err := pubClient.PresignedGetObject(ctx, m.config.MinioBucket, filename, expiry, reqParams)
+		if err != nil {
+			return "", err
+		}
+		return presignedURL.String(), nil
+	}
+
+	presignedURL, err := m.client.PresignedGetObject(ctx, m.config.MinioBucket, filename, expiry, reqParams)
 	if err != nil {
 		return "", err
 	}
-
 	return presignedURL.String(), nil
 }

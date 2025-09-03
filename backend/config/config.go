@@ -6,12 +6,16 @@ import (
 )
 
 type Config struct {
-	// MinIO Configuration
+	// MinIO Configuration (internal)
 	MinIOEndpoint  string
 	MinIOAccessKey string
 	MinIOSecretKey string
 	MinIOSecure    bool
 	MinioBucket    string
+
+	// MinIO Public Endpoint for Presigned URLs (external)
+	PublicMinIOEndpoint string // e.g., minio.wpgc.church
+	PublicMinIOSecure   bool   // true => https
 
 	// Discord Configuration
 	DiscordWebhookURL string
@@ -27,19 +31,22 @@ type Config struct {
 
 func New() *Config {
 	secure, _ := strconv.ParseBool(getEnv("MINIO_SECURE", "false"))
+	publicSecure, _ := strconv.ParseBool(getEnv("MINIO_PUBLIC_SECURE", "true"))
 	batchThreshold, _ := strconv.Atoi(getEnv("BATCH_THRESHOLD", "2"))
 
 	return &Config{
-		MinIOEndpoint:     getEnv("MINIO_ENDPOINT", "localhost:9000"),
-		MinIOAccessKey:    getEnv("MINIO_ACCESS_KEY", "gaius"),
-		MinIOSecretKey:    getEnv("MINIO_SECRET_KEY", "John 3:16"),
-		MinIOSecure:       secure,
-		MinioBucket:       getEnv("MINIO_BUCKET", "sermons"),
-		DiscordWebhookURL: getEnv("DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/1410698516891701400/Ve6k3d8sdd54kf0II1xFc7H6YkYLoWiPFDEe5NsHsmX4Qv6l4CNzD4rMmdlWPQxLnRPT"),
-		WAVSuffix:         getEnv("WAV_SUFFIX", "_raw"),
-		AACSuffix:         getEnv("AAC_SUFFIX", "_streamable"),
-		BatchThreshold:    batchThreshold,
-		Port:              getEnv("PORT", "8000"),
+		MinIOEndpoint:       getEnv("MINIO_ENDPOINT", "localhost:9000"),
+		MinIOAccessKey:      getEnv("MINIO_ACCESS_KEY", "gaius"),
+		MinIOSecretKey:      getEnv("MINIO_SECRET_KEY", "John 3:16"),
+		MinIOSecure:         secure,
+		MinioBucket:         getEnv("MINIO_BUCKET", "sermons"),
+		PublicMinIOEndpoint: getEnv("MINIO_PUBLIC_ENDPOINT", ""),
+		PublicMinIOSecure:   publicSecure,
+		DiscordWebhookURL:   getEnv("DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/1410698516891701400/Ve6k3d8sdd54kf0II1xFc7H6YkYLoWiPFDEe5NsHsmX4Qv6l4CNzD4rMmdlWPQxLnRPT"),
+		WAVSuffix:           getEnv("WAV_SUFFIX", "_raw"),
+		AACSuffix:           getEnv("AAC_SUFFIX", "_streamable"),
+		BatchThreshold:      batchThreshold,
+		Port:                getEnv("PORT", "8000"),
 	}
 }
 
