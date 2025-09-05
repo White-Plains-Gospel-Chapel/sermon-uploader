@@ -1,0 +1,70 @@
+title: "💡 [IDEA] "
+labels: ["idea", "enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 💡 Share Your Idea!
+        Thanks for helping improve the Sermon Uploader! Your ideas make a difference.
+        
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to Solve
+      description: What problem does this feature address?
+      placeholder: |
+        Currently, when I try to upload multiple sermons...
+        It would be helpful if...
+    validations:
+      required: true
+      
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: How would you like to see this work?
+      placeholder: |
+        I imagine a feature that...
+        The interface could show...
+    validations:
+      required: true
+      
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternative Solutions
+      description: Have you considered other approaches?
+      placeholder: |
+        Another way might be...
+        I've also thought about...
+        
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Who Would Benefit?
+      multiple: true
+      options:
+        - Church staff uploading sermons
+        - Tech teams managing the system
+        - Developers contributing code
+        - End users accessing sermons
+        - System administrators
+        
+  - type: dropdown
+    id: priority
+    attributes:
+      label: How Important Is This?
+      options:
+        - 🔴 Critical - Can't use system without it
+        - 🟡 Important - Significant improvement
+        - 🟢 Nice to have - Quality of life
+        - 🔵 Future consideration
+        
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Screenshots, examples, or other details
+      placeholder: |
+        Here's an example from another system...
+        Our church specifically needs...
