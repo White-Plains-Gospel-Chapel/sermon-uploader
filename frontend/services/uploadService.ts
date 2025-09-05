@@ -6,5 +6,6 @@ export const uploadService = {
   getPresignedURLsBatch: api.getPresignedURLsBatch,
   uploadToMinIO: api.uploadToMinIO,
   completeUpload: api.completeUpload,
+  completeUploadBatch: api.completeUploadBatch,
   checkDuplicate: api.checkDuplicate
 }

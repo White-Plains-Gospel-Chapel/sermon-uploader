@@ -25,7 +25,22 @@
       "Bash(gh issue edit:*)",
       "Bash(cd:*)",
       "Bash(cd:*)",
-      "Bash(gh api:*)"
+      "Bash(gh api:*)",
+      "Read(/Users/gaius/Documents/StitchT/Sermon Uploader Project/**)",
+      "Read(/Users/gaius/Documents/StitchT/Sermon Uploader Project/**)",
+      "Bash(ping:*)",
+      "Bash(mkdir:*)",
+      "Read(/Users/gaius/Documents/StitchT/Sermon Uploader Project/**)",
+      "Read(/Users/gaius/Documents/StitchT/Sermon Uploader Project/**)",
+      "Read(/Users/gaius/Documents/StitchT/Sermon Uploader Project/**)",
+      "Read(/Users/gaius/Documents/StitchT/Sermon Uploader Project/APIs/**)",
+      "Read(/Users/gaius/Documents/StitchT/Sermon Uploader Project/APIs/**)",
+      "Read(/Users/gaius/Documents/StitchT/Sermon Uploader Project/Design/**)",
+      "Read(/Users/gaius/Documents/StitchT/Sermon Uploader Project/**)",
+      "Read(/Users/gaius/Documents/StitchT/Sermon Uploader Project/**)",
+      "WebFetch(domain:youtu.be)",
+      "WebSearch",
+      "Bash(gh repo view:*)"
     ],
     "deny": [],
     "ask": []

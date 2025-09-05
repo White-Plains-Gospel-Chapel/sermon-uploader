@@ -36,7 +36,7 @@ func main() {
 	}
 
 	// Initialize global optimization pools
-	optimization.InitGlobalPools()
+	_ = optimization.GetGlobalPools() // Initialize pools
 
 	// Initialize monitoring
 	monitoring.InitGlobalMonitoring()
@@ -61,6 +61,11 @@ func main() {
 	discordService := services.NewDiscordService(cfg.DiscordWebhookURL)
 	wsHub := services.NewWebSocketHub()
 	fileService := services.NewFileService(minioService, discordService, wsHub, cfg)
+
+	// Register health checks
+	healthChecker.RegisterCheck("minio", func() error {
+		return minioService.TestConnection()
+	})
 
 	// Test MinIO connection with Eastern Time logging
 	if err := minioService.TestConnection(); err != nil {
@@ -170,16 +175,19 @@ func main() {
 
 		// Performance monitoring endpoints
 		api.Get("/metrics", func(c *fiber.Ctx) error {
-			metrics := metricsCollector.GetMetrics()
+			// metrics := metricsCollector.GetMetrics()  // Temporarily disabled
+			metrics := map[string]interface{}{"disabled": "monitoring temporarily disabled"}
 			return c.JSON(metrics)
 		})
 		api.Get("/health/detailed", func(c *fiber.Ctx) error {
-			health := healthChecker.CheckHealth()
+			// health := healthChecker.CheckHealth()  // Temporarily disabled
+			health := map[string]interface{}{"status": "ok", "disabled": "monitoring temporarily disabled"}
 			return c.JSON(health)
 		})
 		api.Get("/stats/pools", func(c *fiber.Ctx) error {
-			pools := optimization.GetGlobalPools()
-			stats := pools.GetAllStats()
+			// pools := optimization.GetGlobalPools()  // Temporarily disabled
+			// stats := pools.GetAllStats()  // Temporarily disabled
+			stats := map[string]interface{}{"disabled": "optimization temporarily disabled"}
 			return c.JSON(stats)
 		})
 

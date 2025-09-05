@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -169,9 +170,7 @@ func (h *WebSocketHub) BroadcastMessage(msgType string, data interface{}) error 
 	}
 
 	// Use pooled buffer for JSON marshaling
-	buffer, releaseBuffer := h.pools.GetByteBuffer()
-	defer releaseBuffer()
-
+	buffer := &bytes.Buffer{}
 	encoder := json.NewEncoder(buffer)
 	if err := encoder.Encode(msg); err != nil {
 		return err
