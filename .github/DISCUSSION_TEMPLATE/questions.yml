@@ -1,0 +1,83 @@
+title: "❓ [Q&A] "
+labels: ["question", "help wanted"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 🙋 Ask Your Question!
+        The community is here to help. The more detail you provide, the better we can assist.
+        
+  - type: dropdown
+    id: category
+    attributes:
+      label: Question Category
+      description: What area does your question relate to?
+      options:
+        - 🚀 Getting Started / Installation
+        - 🔧 Configuration / Setup
+        - 📤 Uploading / Processing Files
+        - 🐳 Docker / Deployment
+        - 🍓 Raspberry Pi Specific
+        - 💾 MinIO / Storage
+        - 💬 Discord Notifications
+        - 🔌 API / Integration
+        - 🐛 Troubleshooting
+        - 📚 Documentation
+        - 🤔 Other
+    validations:
+      required: true
+      
+  - type: textarea
+    id: question
+    attributes:
+      label: Your Question
+      description: What would you like to know?
+      placeholder: |
+        How do I...?
+        Why does...?
+        What's the best way to...?
+    validations:
+      required: true
+      
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment Details
+      description: Help us understand your setup
+      value: |
+        - **OS**: [Mac / Raspberry Pi OS / Ubuntu / Other]
+        - **Version**: [e.g., 0.2.0]
+        - **Component**: [Frontend / Backend / MinIO / All]
+        - **Docker**: [Yes / No]
+        - **Installation Method**: [Docker / Manual / Other]
+      
+  - type: textarea
+    id: tried
+    attributes:
+      label: What I've Tried
+      description: What have you attempted so far?
+      placeholder: |
+        - Checked the wiki for...
+        - Tried running command...
+        - Looked at logs and saw...
+        
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs or Error Messages
+      description: Include any error messages or logs
+      render: shell
+      placeholder: |
+        ```
+        Error messages here...
+        ```
+        
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Before Posting Checklist
+      options:
+        - label: I've searched existing discussions
+        - label: I've checked the wiki/documentation
+        - label: I've included environment details
+        - label: This is a question, not a bug report

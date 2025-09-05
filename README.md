@@ -1,6 +1,10 @@
-# Sermon Uploader Pi
+# 🎵 Sermon Uploader Pi
 
 A complete sermon audio file management system designed for Raspberry Pi deployment. Upload WAV files through a web interface, automatically convert to streaming-ready AAC format, and get Discord notifications.
+
+## 🔗 Quick Links
+
+[📚 **Wiki**](https://github.com/White-Plains-Gospel-Chapel/sermon-uploader/wiki) | [💬 **Discussions**](https://github.com/White-Plains-Gospel-Chapel/sermon-uploader/discussions) | [🐛 **Issues**](https://github.com/White-Plains-Gospel-Chapel/sermon-uploader/issues) | [📖 **Docs**](docs/) | [🚀 **Quick Start**](https://github.com/White-Plains-Gospel-Chapel/sermon-uploader/wiki/Quick-Start)
 
 ## Features
 

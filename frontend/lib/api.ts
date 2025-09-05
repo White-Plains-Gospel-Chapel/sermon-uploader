@@ -149,6 +149,23 @@ export const api = {
     return response.json()
   },
 
+  // Mark batch upload as complete for processing (triggers Discord batch notifications)
+  async completeUploadBatch(filenames: string[]) {
+    const response = await fetch(`${API_BASE}/api/upload/complete-batch`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ filenames })
+    })
+
+    if (!response.ok) {
+      throw new Error('Failed to process uploaded batch')
+    }
+
+    return response.json()
+  },
+
   // List files
   async listFiles() {
     const response = await fetch(`${API_BASE}/api/files`)
