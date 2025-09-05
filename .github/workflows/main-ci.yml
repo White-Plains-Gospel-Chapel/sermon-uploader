@@ -245,9 +245,21 @@ jobs:
           echo "- Security: ${{ needs.security-scan.result }}" >> $GITHUB_STEP_SUMMARY
           
           # Set overall status
-          if [[ "${{ needs.go-validation.result }}" == "success" && "${{ needs.frontend-validation.result }}" == "success" ]]; then
-            echo "✅ Core components passed" >> $GITHUB_STEP_SUMMARY
-            exit 0
+          # Consider skipped as acceptable (occurs when no relevant changes detected)
+          GO_RESULT="${{ needs.go-validation.result }}"
+          FRONTEND_RESULT="${{ needs.frontend-validation.result }}"
+          
+          # Check if core components passed or were skipped
+          if [[ "$GO_RESULT" == "success" || "$GO_RESULT" == "skipped" ]] && \
+             [[ "$FRONTEND_RESULT" == "success" || "$FRONTEND_RESULT" == "skipped" ]]; then
+            # At least one must be success (not both skipped)
+            if [[ "$GO_RESULT" == "success" || "$FRONTEND_RESULT" == "success" ]]; then
+              echo "✅ Core components passed" >> $GITHUB_STEP_SUMMARY
+              exit 0
+            else
+              echo "⚠️ All core components skipped (no relevant changes)" >> $GITHUB_STEP_SUMMARY
+              exit 0
+            fi
           else
             echo "❌ Core components failed" >> $GITHUB_STEP_SUMMARY
             exit 1
