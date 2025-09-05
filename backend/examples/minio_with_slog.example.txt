@@ -1,0 +1,405 @@
+package services
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"path/filepath"
+	"time"
+
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
+	
+	"sermon-uploader/pkg/logging"
+)
+
+// MinIOService handles all MinIO operations with structured logging
+type MinIOServiceV2 struct {
+	client     *minio.Client
+	bucketName string
+	logger     *slog.Logger
+}
+
+// MinIOConfig contains MinIO configuration
+type MinIOConfig struct {
+	Endpoint        string
+	AccessKeyID     string
+	SecretAccessKey string
+	UseSSL          bool
+	BucketName      string
+	Logger          *slog.Logger
+}
+
+// NewMinIOServiceV2 creates a new MinIO service with structured logging
+func NewMinIOServiceV2(ctx context.Context, cfg MinIOConfig) (*MinIOServiceV2, error) {
+	// Create MinIO client
+	client, err := minio.New(cfg.Endpoint, &minio.Options{
+		Creds:  credentials.NewStaticV4(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
+		Secure: cfg.UseSSL,
+	})
+	if err != nil {
+		return nil, logging.ErrMinIOConnection("failed to create MinIO client", err).
+			WithContext("endpoint", cfg.Endpoint)
+	}
+	
+	// Test connection and ensure bucket exists
+	exists, err := client.BucketExists(ctx, cfg.BucketName)
+	if err != nil {
+		return nil, logging.ErrMinIOConnection("failed to check bucket existence", err).
+			WithBucket(cfg.BucketName)
+	}
+	
+	if !exists {
+		cfg.Logger.Info("creating MinIO bucket",
+			slog.String("bucket", cfg.BucketName),
+		)
+		
+		if err := client.MakeBucket(ctx, cfg.BucketName, minio.MakeBucketOptions{}); err != nil {
+			return nil, logging.ErrMinIOConnection("failed to create bucket", err).
+				WithBucket(cfg.BucketName)
+		}
+		
+		cfg.Logger.Info("✅ MinIO bucket created",
+			slog.String("bucket", cfg.BucketName),
+		)
+	}
+	
+	return &MinIOServiceV2{
+		client:     client,
+		bucketName: cfg.BucketName,
+		logger:     cfg.Logger,
+	}, nil
+}
+
+// UploadFile uploads a file to MinIO with structured logging
+func (s *MinIOServiceV2) UploadFile(ctx context.Context, objectName string, reader io.Reader, size int64, contentType string) error {
+	// Create operation context with timeout
+	uploadCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	
+	// Add operation duration to context for performance monitoring
+	start := time.Now()
+	defer func() {
+		duration := time.Since(start)
+		uploadCtx = context.WithValue(uploadCtx, logging.ContextKeyOperationDuration, duration)
+	}()
+	
+	// Create upload logger
+	uploadLogger := s.logger.With(
+		slog.String("operation", "upload"),
+		slog.String("object", objectName),
+		slog.Int64("size_bytes", size),
+		slog.String("content_type", contentType),
+	)
+	
+	uploadLogger.InfoContext(uploadCtx, "starting file upload")
+	
+	// Perform upload
+	info, err := s.client.PutObject(uploadCtx, s.bucketName, objectName, reader, size, minio.PutObjectOptions{
+		ContentType: contentType,
+	})
+	
+	if err != nil {
+		uploadErr := logging.ErrUpload(objectName, err).
+			WithBucket(s.bucketName).
+			WithContext("size", size).
+			WithContext("content_type", contentType)
+		
+		uploadLogger.ErrorContext(uploadCtx, "upload failed",
+			slog.Any("error", uploadErr),
+			slog.Duration("duration", time.Since(start)),
+		)
+		
+		return uploadErr
+	}
+	
+	// Calculate throughput
+	duration := time.Since(start)
+	throughputMBps := float64(size) / duration.Seconds() / 1024 / 1024
+	
+	uploadLogger.InfoContext(uploadCtx, "✅ upload completed",
+		slog.String("etag", info.ETag),
+		slog.Duration("duration", duration),
+		slog.Float64("throughput_mbps", throughputMBps),
+		slog.String("location", info.Location),
+	)
+	
+	return nil
+}
+
+// GetPresignedURL generates a presigned URL for downloading with structured logging
+func (s *MinIOServiceV2) GetPresignedURL(ctx context.Context, objectName string, expiry time.Duration) (string, error) {
+	logger := s.logger.With(
+		slog.String("operation", "presigned_url"),
+		slog.String("object", objectName),
+		slog.Duration("expiry", expiry),
+	)
+	
+	logger.DebugContext(ctx, "generating presigned URL")
+	
+	url, err := s.client.PresignedGetObject(ctx, s.bucketName, objectName, expiry, nil)
+	if err != nil {
+		presignedErr := logging.NewError(logging.ErrCodeInternal, "failed to generate presigned URL").
+			WithFile(objectName).
+			WithCause(err).
+			WithContext("expiry", expiry)
+		
+		logger.ErrorContext(ctx, "presigned URL generation failed",
+			slog.Any("error", presignedErr),
+		)
+		
+		return "", presignedErr
+	}
+	
+	logger.InfoContext(ctx, "presigned URL generated",
+		slog.String("url_host", url.Host),
+		slog.String("url_path", url.Path),
+	)
+	
+	return url.String(), nil
+}
+
+// FileMetadataV2 represents file metadata with structured fields for V2 service
+type FileMetadataV2 struct {
+	OriginalFilename string                 `json:"original_filename"`
+	RenamedFilename  string                 `json:"renamed_filename"`
+	FileHash         string                 `json:"file_hash"`
+	UploadedAt       time.Time              `json:"uploaded_at"`
+	Size             int64                  `json:"size"`
+	ContentType      string                 `json:"content_type"`
+	ProcessingStatus string                 `json:"processing_status"`
+	Audio            map[string]interface{} `json:"audio,omitempty"`
+}
+
+// UploadMetadata uploads metadata JSON to MinIO with structured logging
+func (s *MinIOServiceV2) UploadMetadata(ctx context.Context, filename string, metadata *FileMetadataV2) error {
+	metadataLogger := s.logger.With(
+		slog.String("operation", "upload_metadata"),
+		slog.String("filename", filename),
+	)
+	
+	metadataPath := fmt.Sprintf("metadata/%s.json", filename)
+	
+	// Marshal metadata
+	data, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		metaErr := logging.ErrMetadata(filename, err).
+			WithContext("marshal_error", true)
+		
+		metadataLogger.ErrorContext(ctx, "failed to marshal metadata",
+			slog.Any("error", metaErr),
+		)
+		
+		return metaErr
+	}
+	
+	metadataLogger.DebugContext(ctx, "uploading metadata",
+		slog.String("path", metadataPath),
+		slog.Int("size_bytes", len(data)),
+	)
+	
+	// Upload metadata
+	_, err = s.client.PutObject(ctx, s.bucketName, metadataPath, bytes.NewReader(data), int64(len(data)), minio.PutObjectOptions{
+		ContentType: "application/json",
+	})
+	
+	if err != nil {
+		metaErr := logging.ErrMetadata(filename, err).
+			WithBucket(s.bucketName).
+			WithContext("path", metadataPath)
+		
+		metadataLogger.ErrorContext(ctx, "metadata upload failed",
+			slog.Any("error", metaErr),
+		)
+		
+		return metaErr
+	}
+	
+	metadataLogger.InfoContext(ctx, "✅ metadata uploaded",
+		slog.String("path", metadataPath),
+		slog.Int("size_bytes", len(data)),
+		slog.String("status", metadata.ProcessingStatus),
+	)
+	
+	return nil
+}
+
+// ListFiles lists files in the bucket with structured logging
+func (s *MinIOServiceV2) ListFiles(ctx context.Context, prefix string, recursive bool) ([]minio.ObjectInfo, error) {
+	listLogger := s.logger.With(
+		slog.String("operation", "list_files"),
+		slog.String("prefix", prefix),
+		slog.Bool("recursive", recursive),
+	)
+	
+	listLogger.DebugContext(ctx, "listing files")
+	
+	var objects []minio.ObjectInfo
+	
+	// List objects
+	objectCh := s.client.ListObjects(ctx, s.bucketName, minio.ListObjectsOptions{
+		Prefix:    prefix,
+		Recursive: recursive,
+	})
+	
+	count := 0
+	totalSize := int64(0)
+	
+	for object := range objectCh {
+		if object.Err != nil {
+			listErr := logging.NewError(logging.ErrCodeInternal, "error during file listing").
+				WithCause(object.Err).
+				WithContext("prefix", prefix).
+				WithContext("count_before_error", count)
+			
+			listLogger.ErrorContext(ctx, "listing failed",
+				slog.Any("error", listErr),
+			)
+			
+			return objects, listErr
+		}
+		
+		objects = append(objects, object)
+		count++
+		totalSize += object.Size
+	}
+	
+	listLogger.InfoContext(ctx, "files listed",
+		slog.Int("count", count),
+		slog.Int64("total_size_bytes", totalSize),
+		slog.Float64("total_size_mb", float64(totalSize)/1024/1024),
+	)
+	
+	return objects, nil
+}
+
+// DeleteFile removes a file from MinIO with structured logging
+func (s *MinIOServiceV2) DeleteFile(ctx context.Context, objectName string) error {
+	deleteLogger := s.logger.With(
+		slog.String("operation", "delete"),
+		slog.String("object", objectName),
+	)
+	
+	deleteLogger.InfoContext(ctx, "deleting file")
+	
+	err := s.client.RemoveObject(ctx, s.bucketName, objectName, minio.RemoveObjectOptions{})
+	if err != nil {
+		deleteErr := logging.NewError(logging.ErrCodeInternal, "failed to delete file").
+			WithFile(objectName).
+			WithBucket(s.bucketName).
+			WithCause(err)
+		
+		deleteLogger.ErrorContext(ctx, "deletion failed",
+			slog.Any("error", deleteErr),
+		)
+		
+		return deleteErr
+	}
+	
+	// Also try to delete metadata
+	metadataPath := fmt.Sprintf("metadata/%s.json", filepath.Base(objectName))
+	if err := s.client.RemoveObject(ctx, s.bucketName, metadataPath, minio.RemoveObjectOptions{}); err != nil {
+		// Log but don't fail if metadata doesn't exist
+		deleteLogger.DebugContext(ctx, "metadata deletion failed (may not exist)",
+			slog.String("metadata_path", metadataPath),
+			slog.String("error", err.Error()),
+		)
+	}
+	
+	deleteLogger.InfoContext(ctx, "✅ file deleted",
+		slog.String("object", objectName),
+		slog.String("metadata_path", metadataPath),
+	)
+	
+	return nil
+}
+
+// CheckFileExists verifies if a file exists in MinIO with structured logging
+func (s *MinIOServiceV2) CheckFileExists(ctx context.Context, objectName string) (bool, error) {
+	_, err := s.client.StatObject(ctx, s.bucketName, objectName, minio.StatObjectOptions{})
+	if err != nil {
+		// Check if it's a "not found" error
+		if minio.ToErrorResponse(err).Code == "NoSuchKey" {
+			s.logger.DebugContext(ctx, "file not found",
+				slog.String("object", objectName),
+			)
+			return false, nil
+		}
+		
+		// Actual error
+		checkErr := logging.NewError(logging.ErrCodeInternal, "failed to check file existence").
+			WithFile(objectName).
+			WithCause(err)
+		
+		s.logger.ErrorContext(ctx, "existence check failed",
+			slog.Any("error", checkErr),
+		)
+		
+		return false, checkErr
+	}
+	
+	s.logger.DebugContext(ctx, "file exists",
+		slog.String("object", objectName),
+	)
+	
+	return true, nil
+}
+
+// GetBucketStats returns statistics about the bucket with structured logging
+func (s *MinIOServiceV2) GetBucketStats(ctx context.Context) (map[string]interface{}, error) {
+	statsLogger := s.logger.With(
+		slog.String("operation", "bucket_stats"),
+	)
+	
+	statsLogger.DebugContext(ctx, "calculating bucket statistics")
+	
+	stats := map[string]interface{}{
+		"bucket_name": s.bucketName,
+		"wav_count":   0,
+		"aac_count":   0,
+		"total_size":  int64(0),
+		"wav_size":    int64(0),
+		"aac_size":    int64(0),
+	}
+	
+	objectCh := s.client.ListObjects(ctx, s.bucketName, minio.ListObjectsOptions{
+		Recursive: true,
+	})
+	
+	for object := range objectCh {
+		if object.Err != nil {
+			statsErr := logging.NewError(logging.ErrCodeInternal, "failed to get bucket statistics").
+				WithBucket(s.bucketName).
+				WithCause(object.Err)
+			
+			statsLogger.ErrorContext(ctx, "statistics calculation failed",
+				slog.Any("error", statsErr),
+			)
+			
+			return nil, statsErr
+		}
+		
+		stats["total_size"] = stats["total_size"].(int64) + object.Size
+		
+		if filepath.Ext(object.Key) == ".wav" {
+			stats["wav_count"] = stats["wav_count"].(int) + 1
+			stats["wav_size"] = stats["wav_size"].(int64) + object.Size
+		} else if filepath.Ext(object.Key) == ".aac" {
+			stats["aac_count"] = stats["aac_count"].(int) + 1
+			stats["aac_size"] = stats["aac_size"].(int64) + object.Size
+		}
+	}
+	
+	statsLogger.InfoContext(ctx, "bucket statistics calculated",
+		slog.Int("wav_files", stats["wav_count"].(int)),
+		slog.Int("aac_files", stats["aac_count"].(int)),
+		slog.Float64("total_size_gb", float64(stats["total_size"].(int64))/1024/1024/1024),
+		slog.Float64("wav_size_gb", float64(stats["wav_size"].(int64))/1024/1024/1024),
+		slog.Float64("aac_size_gb", float64(stats["aac_size"].(int64))/1024/1024/1024),
+	)
+	
+	return stats, nil
+}

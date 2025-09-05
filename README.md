@@ -12,7 +12,7 @@ A complete sermon audio file management system designed for Raspberry Pi deploym
 - **Audio processing** - WAV to AAC conversion at 320kbps using FFmpeg  
 - **Duplicate detection** - SHA256 hashing prevents duplicate uploads
 - **MinIO object storage** - Reliable file storage and retrieval
-- **Discord notifications** - Real-time upload status via webhooks
+- **Discord live notifications** - Real-time status with live message updates (no spam!)
 - **WebSocket updates** - Live progress feedback during uploads
 - **Single Pi deployment** - Everything runs in one Docker container
 - **Pre-commit hooks** - Automatic build validation before commits
