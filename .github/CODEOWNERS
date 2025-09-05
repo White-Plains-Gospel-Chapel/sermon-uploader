@@ -1,6 +1,24 @@
 # Global owners for all files
 * @greastern
 
+# CRITICAL: Audio-handling code requires MANDATORY review
+backend/services/minio*.go @greastern
+backend/services/file_service.go @greastern
+backend/services/metadata.go @greastern
+backend/handlers/presigned.go @greastern
+backend/handlers/handlers.go @greastern
+backend/config/config.go @greastern
+
+# Frontend upload components require review
+frontend/src/components/upload/ @greastern
+frontend/src/hooks/useUpload* @greastern
+frontend/src/lib/upload* @greastern
+
+# Audio quality tests require review
+backend/audio_quality_test.go @greastern
+backend/*test*.go @greastern
+frontend/**/*test*.{ts,tsx,js,jsx} @greastern
+
 # Workflow and configuration files require review
 .github/ @greastern
 .github/workflows/ @greastern
@@ -15,3 +33,9 @@ setup-ssh-key.sh @greastern
 # Environment and configuration
 .env @greastern
 .gitignore @greastern
+
+# Audio quality preservation workflows (CRITICAL)
+.github/workflows/audio-quality-ci.yml @greastern
+.github/workflows/pr-automation-audio.yml @greastern
+.github/workflows/deployment-audio-safe.yml @greastern
+.github/workflows/monitoring-alerting.yml @greastern
