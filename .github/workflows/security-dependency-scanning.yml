@@ -1,0 +1,645 @@
+name: Security & Dependency Scanning
+
+on:
+  # Run on every PR and push to main branches
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  
+  # Daily security scans
+  schedule:
+    - cron: '0 6 * * *'  # 6 AM UTC daily
+  
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      scan_type:
+        description: 'Type of scan to run'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+          - full
+          - dependencies-only
+          - secrets-only
+          - docker-only
+
+env:
+  GO_VERSION: "1.21"
+  NODE_VERSION: "20"
+
+jobs:
+  # Job 1: Secret Scanning
+  secret-scan:
+    name: Secret & Credential Scanning
+    runs-on: ubuntu-latest
+    if: github.event.inputs.scan_type != 'dependencies-only' && github.event.inputs.scan_type != 'docker-only'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for comprehensive scanning
+
+      - name: Run TruffleHog OSS
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --debug --only-verified
+
+      - name: Scan for common secrets patterns
+        run: |
+          echo "🔍 Scanning for common secret patterns..."
+          
+          # Define patterns to search for
+          PATTERNS=(
+            # API Keys and tokens
+            "(?i)(api[_-]?key|apikey)\s*[:=]\s*['\"]?[a-zA-Z0-9]{32,}['\"]?"
+            "(?i)(secret[_-]?key|secretkey)\s*[:=]\s*['\"]?[a-zA-Z0-9]{32,}['\"]?"
+            "(?i)(access[_-]?token|accesstoken)\s*[:=]\s*['\"]?[a-zA-Z0-9]{32,}['\"]?"
+            
+            # Discord webhooks
+            "https://discord.com/api/webhooks/[0-9]+/[a-zA-Z0-9_-]+"
+            "https://discordapp.com/api/webhooks/[0-9]+/[a-zA-Z0-9_-]+"
+            
+            # AWS credentials
+            "AKIA[0-9A-Z]{16}"
+            "(?i)aws[_-]?secret[_-]?access[_-]?key"
+            
+            # Database URLs
+            "(?i)(database[_-]?url|db[_-]?url)\s*[:=]\s*['\"]?[a-zA-Z0-9+_.-]+://[^\s'\"]+['\"]?"
+            
+            # JWT tokens
+            "eyJ[A-Za-z0-9_-]*\\.eyJ[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]*"
+            
+            # MinIO credentials (specific to this project)
+            "(?i)minio[_-]?(access[_-]?key|secret[_-]?key)"
+          )
+          
+          VIOLATIONS_FOUND=false
+          
+          for pattern in "${PATTERNS[@]}"; do
+            echo "Searching for pattern: $pattern"
+            
+            # Search in all files except .git, node_modules, and generated files
+            if grep -r -E "$pattern" . \
+              --exclude-dir=.git \
+              --exclude-dir=node_modules \
+              --exclude-dir=vendor \
+              --exclude-dir=.next \
+              --exclude="*.log" \
+              --exclude="*.lock" \
+              --exclude="package-lock.json" \
+              --exclude="go.sum" > /tmp/secret_scan_results.txt 2>/dev/null; then
+              
+              echo "⚠️ Potential secrets found:"
+              cat /tmp/secret_scan_results.txt
+              VIOLATIONS_FOUND=true
+            fi
+          done
+          
+          if [ "$VIOLATIONS_FOUND" = true ]; then
+            echo "❌ Secret scanning found potential violations"
+            echo "Please review the findings above and ensure no real secrets are committed"
+            exit 1
+          else
+            echo "✅ No obvious secret patterns detected"
+          fi
+
+      - name: Check for hardcoded credentials in config files
+        run: |
+          echo "🔍 Checking configuration files for hardcoded credentials..."
+          
+          # Check common config files
+          CONFIG_FILES=(".env" ".env.example" "config.yml" "config.yaml" "config.json")
+          
+          for file in "${CONFIG_FILES[@]}"; do
+            if [ -f "$file" ]; then
+              echo "Checking $file..."
+              
+              # Look for non-example values in sensitive fields
+              if grep -E "(password|secret|key|token)\s*[:=]\s*['\"]?[a-zA-Z0-9]{8,}" "$file" | grep -v -E "(example|placeholder|changeme|your_|<|>)" > /dev/null; then
+                echo "⚠️ Potential hardcoded credentials in $file:"
+                grep -E "(password|secret|key|token)\s*[:=]" "$file" | head -3
+                echo "Please ensure these are example values only"
+              fi
+            fi
+          done
+
+  # Job 2: Dependency Vulnerability Scanning
+  dependency-scan:
+    name: Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+    if: github.event.inputs.scan_type != 'secrets-only' && github.event.inputs.scan_type != 'docker-only'
+    
+    strategy:
+      matrix:
+        component: [backend, frontend]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go (for backend)
+        if: matrix.component == 'backend'
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Setup Node.js (for frontend)  
+        if: matrix.component == 'frontend'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Scan Go dependencies
+        if: matrix.component == 'backend'
+        working-directory: backend
+        run: |
+          echo "🔍 Scanning Go dependencies for vulnerabilities..."
+          
+          # Install govulncheck
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          
+          # Run vulnerability check
+          if ! govulncheck ./...; then
+            echo "❌ Go dependency vulnerabilities found"
+            exit 1
+          fi
+          
+          # Also check with Nancy (Sonatype)
+          echo "Running additional dependency scan with Nancy..."
+          go list -json -deps ./... | docker run --rm -i sonatypecommunity/nancy:latest sleuth
+          
+          echo "✅ Go dependencies scan completed"
+
+      - name: Scan Node.js dependencies
+        if: matrix.component == 'frontend'
+        working-directory: frontend
+        run: |
+          echo "🔍 Scanning Node.js dependencies for vulnerabilities..."
+          
+          # Install dependencies
+          npm ci
+          
+          # Run npm audit
+          echo "Running npm audit..."
+          if ! npm audit --audit-level=high; then
+            echo "❌ High/Critical vulnerabilities found in npm dependencies"
+            echo "Run 'npm audit fix' to attempt automatic fixes"
+            exit 1
+          fi
+          
+          # Additional scan with audit-ci
+          echo "Running detailed vulnerability scan..."
+          npx audit-ci --high
+          
+          echo "✅ Node.js dependencies scan completed"
+
+      - name: Generate dependency report
+        run: |
+          echo "📋 Generating dependency security report..."
+          
+          REPORT_FILE="security-report-${{ matrix.component }}.md"
+          
+          cat > "$REPORT_FILE" << EOF
+          # Security Scan Report - ${{ matrix.component }}
+          
+          **Scan Date**: $(date)
+          **Component**: ${{ matrix.component }}
+          **Repository**: ${{ github.repository }}
+          **Branch**: ${{ github.ref }}
+          
+          ## Summary
+          EOF
+          
+          if [ "${{ matrix.component }}" = "backend" ]; then
+            cat >> "$REPORT_FILE" << EOF
+          - **Go Version**: $(go version)
+          - **Dependencies Scanned**: $(go list -m all | wc -l) modules
+          - **Vulnerability Scanner**: govulncheck, Nancy
+          EOF
+          elif [ "${{ matrix.component }}" = "frontend" ]; then
+            cd frontend
+            cat >> "../$REPORT_FILE" << EOF
+          - **Node.js Version**: $(node --version)
+          - **Dependencies Scanned**: $(npm list --depth=0 2>/dev/null | grep -c "├\|└" || echo "Unknown")
+          - **Vulnerability Scanner**: npm audit, audit-ci
+          EOF
+          fi
+          
+          echo "## Scan Results" >> "$REPORT_FILE"
+          echo "✅ No high or critical vulnerabilities detected" >> "$REPORT_FILE"
+
+      - name: Upload security report
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-reports
+          path: security-report-*.md
+
+  # Job 3: Docker Image Security Scanning
+  docker-security-scan:
+    name: Docker Image Security Scan
+    runs-on: ubuntu-latest
+    if: github.event.inputs.scan_type != 'dependencies-only' && github.event.inputs.scan_type != 'secrets-only'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build images for scanning
+        run: |
+          echo "🏗️ Building Docker images for security scanning..."
+          
+          # Build backend image
+          if [ -f "backend/Dockerfile" ]; then
+            docker build -t sermon-uploader-backend:scan backend/
+          fi
+          
+          # Build frontend image  
+          if [ -f "frontend/Dockerfile" ]; then
+            docker build -t sermon-uploader-frontend:scan frontend/
+          fi
+          
+          # Build any other Dockerfiles
+          find . -name "Dockerfile*" -not -path "./backend/Dockerfile" -not -path "./frontend/Dockerfile" | while read dockerfile; do
+            dir=$(dirname "$dockerfile")
+            name=$(basename "$dockerfile")
+            echo "Building from $dockerfile..."
+            docker build -f "$dockerfile" -t "sermon-uploader-$name:scan" "$dir/"
+          done
+
+      - name: Scan images with Trivy
+        run: |
+          echo "🔍 Scanning Docker images with Trivy..."
+          
+          # Get list of built images
+          IMAGES=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep "sermon-uploader.*:scan")
+          
+          if [ -z "$IMAGES" ]; then
+            echo "No images built for scanning"
+            exit 0
+          fi
+          
+          SCAN_RESULTS=""
+          HAS_CRITICAL=false
+          
+          for image in $IMAGES; do
+            echo "Scanning $image..."
+            
+            # Scan for vulnerabilities
+            if docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+              aquasec/trivy image \
+              --format table \
+              --severity HIGH,CRITICAL \
+              --exit-code 1 \
+              "$image" > "trivy-${image//[:\/ ]/-}.txt" 2>&1; then
+              echo "✅ $image: No high/critical vulnerabilities"
+              SCAN_RESULTS="$SCAN_RESULTS\n✅ $image: Clean"
+            else
+              echo "❌ $image: Vulnerabilities found"
+              SCAN_RESULTS="$SCAN_RESULTS\n❌ $image: Vulnerabilities detected"
+              HAS_CRITICAL=true
+              
+              # Show first few lines of results
+              echo "Preview of vulnerabilities:"
+              head -20 "trivy-${image//[:\/ ]/-}.txt"
+            fi
+          done
+          
+          # Generate summary
+          echo -e "\n🔍 Docker Security Scan Summary:"
+          echo -e "$SCAN_RESULTS"
+          
+          if [ "$HAS_CRITICAL" = true ]; then
+            echo -e "\n❌ Critical vulnerabilities found in one or more images"
+            echo "Please review the scan results and update base images or dependencies"
+            exit 1
+          fi
+
+      - name: Scan Dockerfile best practices
+        run: |
+          echo "📋 Checking Dockerfile best practices..."
+          
+          # Install hadolint
+          docker pull hadolint/hadolint:latest
+          
+          find . -name "Dockerfile*" | while read dockerfile; do
+            echo "Checking $dockerfile..."
+            
+            if docker run --rm -i hadolint/hadolint:latest < "$dockerfile"; then
+              echo "✅ $dockerfile passes best practice checks"
+            else
+              echo "⚠️ $dockerfile has recommendations (non-blocking)"
+            fi
+          done
+
+      - name: Upload Trivy scan results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: trivy-scan-results
+          path: trivy-*.txt
+
+  # Job 4: Code Quality & SAST (Static Application Security Testing)
+  static-analysis:
+    name: Static Application Security Testing
+    runs-on: ubuntu-latest
+    if: github.event.inputs.scan_type != 'dependencies-only' && github.event.inputs.scan_type != 'docker-only'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run CodeQL Analysis
+        uses: github/codeql-action/init@v2
+        with:
+          languages: go, javascript
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v2
+
+      - name: Run Gosec (Go Security Checker)
+        if: always()
+        run: |
+          echo "🔍 Running Gosec security scanner for Go code..."
+          
+          if [ -d "backend" ]; then
+            cd backend
+            
+            # Install gosec
+            curl -sfL https://raw.githubusercontent.com/securecodewarrior/gosec/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.18.2
+            
+            # Run security scan
+            if ! $(go env GOPATH)/bin/gosec -fmt json -out ../gosec-report.json -severity medium ./...; then
+              echo "❌ Security issues found in Go code"
+              
+              # Show summary
+              $(go env GOPATH)/bin/gosec -fmt text ./... || true
+              exit 1
+            else
+              echo "✅ No significant security issues found in Go code"
+            fi
+          fi
+
+      - name: Run ESLint Security Plugin (for frontend)
+        if: always()
+        run: |
+          echo "🔍 Running ESLint security checks for frontend..."
+          
+          if [ -d "frontend" ]; then
+            cd frontend
+            
+            # Install security-focused ESLint plugins
+            npm install --no-save \
+              eslint-plugin-security \
+              eslint-plugin-no-secrets \
+              eslint-plugin-anti-trojan-source
+            
+            # Create security-focused ESLint config
+            cat > .eslintrc.security.js << 'EOF'
+          module.exports = {
+            plugins: ['security', 'no-secrets', 'anti-trojan-source'],
+            extends: ['plugin:security/recommended'],
+            rules: {
+              'no-secrets/no-secrets': 'error',
+              'anti-trojan-source/no-bidi': 'error',
+              'security/detect-object-injection': 'error',
+              'security/detect-non-literal-regexp': 'warn',
+              'security/detect-unsafe-regex': 'error'
+            }
+          };
+          EOF
+            
+            # Run security-focused linting
+            if ! npx eslint --config .eslintrc.security.js "**/*.{js,ts,tsx,jsx}" --ignore-path .gitignore; then
+              echo "❌ Security issues found in frontend code"
+              exit 1
+            else
+              echo "✅ No security issues found in frontend code"
+            fi
+          fi
+
+      - name: Upload security scan reports
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: sast-reports
+          path: |
+            gosec-report.json
+            **/*security*.json
+
+  # Job 5: Infrastructure as Code Security
+  iac-security:
+    name: Infrastructure Security Scan
+    runs-on: ubuntu-latest
+    if: github.event.inputs.scan_type != 'dependencies-only'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Scan Docker Compose files
+        run: |
+          echo "🔍 Scanning Docker Compose configurations..."
+          
+          # Find all docker-compose files
+          COMPOSE_FILES=$(find . -name "docker-compose*.yml" -o -name "docker-compose*.yaml")
+          
+          if [ -z "$COMPOSE_FILES" ]; then
+            echo "No Docker Compose files found"
+            exit 0
+          fi
+          
+          ISSUES_FOUND=false
+          
+          for file in $COMPOSE_FILES; do
+            echo "Checking $file..."
+            
+            # Check for common security issues
+            if grep -q "privileged.*true" "$file"; then
+              echo "⚠️ Privileged containers found in $file"
+              ISSUES_FOUND=true
+            fi
+            
+            if grep -q "network_mode.*host" "$file"; then
+              echo "⚠️ Host network mode found in $file"
+              ISSUES_FOUND=true
+            fi
+            
+            if grep -qE ":\s*[0-9]+" "$file" && ! grep -q "127.0.0.1" "$file"; then
+              echo "⚠️ Ports exposed to all interfaces in $file"
+            fi
+            
+            # Check for secrets in environment variables
+            if grep -B2 -A2 -i "password\|secret\|key" "$file" | grep -E ":\s*[a-zA-Z0-9]{8,}"; then
+              echo "⚠️ Potential hardcoded secrets in environment variables in $file"
+              ISSUES_FOUND=true
+            fi
+          done
+          
+          if [ "$ISSUES_FOUND" = false ]; then
+            echo "✅ Docker Compose security checks passed"
+          fi
+
+      - name: Scan GitHub Actions workflows
+        run: |
+          echo "🔍 Scanning GitHub Actions workflows for security issues..."
+          
+          WORKFLOW_DIR=".github/workflows"
+          
+          if [ ! -d "$WORKFLOW_DIR" ]; then
+            echo "No GitHub workflows found"
+            exit 0
+          fi
+          
+          find "$WORKFLOW_DIR" -name "*.yml" -o -name "*.yaml" | while read workflow; do
+            echo "Checking $workflow..."
+            
+            # Check for common security issues
+            if grep -q "github.token" "$workflow" && ! grep -q "permissions:" "$workflow"; then
+              echo "⚠️ GitHub token used without explicit permissions in $workflow"
+            fi
+            
+            if grep -q '\${{.*}}' "$workflow" | grep -v 'github\.' | grep -v 'secrets\.'; then
+              echo "⚠️ Potential code injection vulnerability in $workflow"
+            fi
+            
+            if grep -q "actions/checkout@v[12]" "$workflow"; then
+              echo "⚠️ Outdated checkout action version in $workflow"
+            fi
+          done
+
+  # Job 6: Security Summary and Reporting
+  security-summary:
+    name: Security Summary Report
+    runs-on: ubuntu-latest
+    needs: [secret-scan, dependency-scan, docker-security-scan, static-analysis, iac-security]
+    if: always()
+    
+    steps:
+      - name: Download all security reports
+        uses: actions/download-artifact@v3
+        with:
+          path: security-reports/
+
+      - name: Generate comprehensive security report
+        run: |
+          echo "📋 Generating comprehensive security summary..."
+          
+          REPORT_FILE="comprehensive-security-report.md"
+          
+          cat > "$REPORT_FILE" << EOF
+          # 🔐 Comprehensive Security Scan Report
+          
+          **Repository**: ${{ github.repository }}
+          **Scan Date**: $(date)
+          **Trigger**: ${{ github.event_name }}
+          **Branch/PR**: ${{ github.ref }}
+          
+          ## Summary
+          
+          | Scan Type | Status | Details |
+          |-----------|--------|---------|
+          | Secret Detection | ${{ needs.secret-scan.result == 'success' && '✅ PASSED' || needs.secret-scan.result == 'failure' && '❌ FAILED' || '⚪ SKIPPED' }} | Credential and API key detection |
+          | Dependency Scan | ${{ needs.dependency-scan.result == 'success' && '✅ PASSED' || needs.dependency-scan.result == 'failure' && '❌ FAILED' || '⚪ SKIPPED' }} | Go and Node.js vulnerabilities |
+          | Docker Security | ${{ needs.docker-security-scan.result == 'success' && '✅ PASSED' || needs.docker-security-scan.result == 'failure' && '❌ FAILED' || '⚪ SKIPPED' }} | Container image vulnerabilities |
+          | Static Analysis | ${{ needs.static-analysis.result == 'success' && '✅ PASSED' || needs.static-analysis.result == 'failure' && '❌ FAILED' || '⚪ SKIPPED' }} | Code security analysis |
+          | Infrastructure | ${{ needs.iac-security.result == 'success' && '✅ PASSED' || needs.iac-security.result == 'failure' && '❌ FAILED' || '⚪ SKIPPED' }} | Docker Compose and workflows |
+          
+          ## Recommendations
+          
+          ### Immediate Actions Required:
+          EOF
+          
+          # Add specific recommendations based on results
+          if [[ "${{ needs.secret-scan.result }}" == "failure" ]]; then
+            echo "- 🚨 **Secret Scan Failed**: Remove any hardcoded credentials and use environment variables" >> "$REPORT_FILE"
+          fi
+          
+          if [[ "${{ needs.dependency-scan.result }}" == "failure" ]]; then
+            echo "- 🚨 **Dependency Vulnerabilities**: Update vulnerable dependencies to latest secure versions" >> "$REPORT_FILE"
+          fi
+          
+          if [[ "${{ needs.docker-security-scan.result }}" == "failure" ]]; then
+            echo "- 🚨 **Docker Security Issues**: Update base images and fix container vulnerabilities" >> "$REPORT_FILE"
+          fi
+          
+          if [[ "${{ needs.static-analysis.result }}" == "failure" ]]; then
+            echo "- 🚨 **Code Security Issues**: Address static analysis findings in application code" >> "$REPORT_FILE"
+          fi
+          
+          cat >> "$REPORT_FILE" << EOF
+          
+          ### Best Practices:
+          - ✅ Use environment variables for all secrets and configuration
+          - ✅ Regularly update dependencies and base images
+          - ✅ Enable automated security scanning in CI/CD
+          - ✅ Follow principle of least privilege for containers
+          - ✅ Use official, minimal base images
+          
+          ### Next Steps:
+          1. Address any failed scan results above
+          2. Review detailed scan reports in artifacts
+          3. Implement fixes and re-run scans
+          4. Consider adding pre-commit hooks for security
+          
+          ---
+          *Report generated automatically by GitHub Actions*
+          EOF
+
+      - name: Upload comprehensive report
+        uses: actions/upload-artifact@v3
+        with:
+          name: comprehensive-security-report
+          path: comprehensive-security-report.md
+
+      - name: Comment on PR with security summary
+        if: github.event_name == 'pull_request'
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          
+          # Determine overall security status
+          OVERALL_STATUS="✅ PASSED"
+          if [[ "${{ needs.secret-scan.result }}" == "failure" ]] || [[ "${{ needs.dependency-scan.result }}" == "failure" ]] || [[ "${{ needs.docker-security-scan.result }}" == "failure" ]] || [[ "${{ needs.static-analysis.result }}" == "failure" ]]; then
+            OVERALL_STATUS="❌ SECURITY ISSUES FOUND"
+          fi
+          
+          gh pr comment $PR_NUMBER --body "## 🔐 Security Scan Results
+          
+          **Overall Status**: $OVERALL_STATUS
+          
+          | Scan Type | Result |
+          |-----------|--------|
+          | 🔍 Secret Detection | ${{ needs.secret-scan.result == 'success' && '✅ Passed' || needs.secret-scan.result == 'failure' && '❌ Failed' || '⚪ Skipped' }} |
+          | 📦 Dependencies | ${{ needs.dependency-scan.result == 'success' && '✅ Passed' || needs.dependency-scan.result == 'failure' && '❌ Failed' || '⚪ Skipped' }} |
+          | 🐳 Docker Images | ${{ needs.docker-security-scan.result == 'success' && '✅ Passed' || needs.docker-security-scan.result == 'failure' && '❌ Failed' || '⚪ Skipped' }} |
+          | 🔎 Static Analysis | ${{ needs.static-analysis.result == 'success' && '✅ Passed' || needs.static-analysis.result == 'failure' && '❌ Failed' || '⚪ Skipped' }} |
+          | 🏗️ Infrastructure | ${{ needs.iac-security.result == 'success' && '✅ Passed' || needs.iac-security.result == 'failure' && '❌ Failed' || '⚪ Skipped' }} |
+          
+          $( [[ "$OVERALL_STATUS" == "❌ SECURITY ISSUES FOUND" ]] && echo "
+          ⚠️ **Action Required**: Please address the security issues found before merging.
+          
+          📋 Detailed reports are available in the workflow artifacts." || echo "
+          ✅ **All security checks passed!** This PR meets security requirements." )
+          
+          ---
+          <sub>Automated security scan by GitHub Actions</sub>"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fail workflow if critical security issues found
+        run: |
+          if [[ "${{ needs.secret-scan.result }}" == "failure" ]] || [[ "${{ needs.dependency-scan.result }}" == "failure" ]] || [[ "${{ needs.docker-security-scan.result }}" == "failure" ]] || [[ "${{ needs.static-analysis.result }}" == "failure" ]]; then
+            echo "❌ Critical security issues found. Please address before proceeding."
+            exit 1
+          fi
+          echo "✅ All security scans passed successfully!"

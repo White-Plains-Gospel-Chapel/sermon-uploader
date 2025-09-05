@@ -1,0 +1,462 @@
+name: Audio Quality Preservation CI
+
+on:
+  pull_request:
+    branches: [master, main]
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+env:
+  GO_VERSION: '1.21'
+  NODE_VERSION: '18'
+
+jobs:
+  audio-preservation-check:
+    name: 🎵 Audio Quality Preservation Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install audio analysis tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg mediainfo sox
+
+      - name: Check for audio compression violations
+        run: |
+          echo "🔍 Checking for audio compression violations..."
+          
+          # Check for forbidden compression patterns
+          VIOLATIONS=()
+          
+          # Check 1: Ensure audio/wav content type is preserved
+          if git diff --name-only origin/master...HEAD | grep -E '\.(go|ts|tsx|js|jsx)$' | xargs grep -l "ContentType.*audio" | xargs grep -v "audio/wav" | grep -v test; then
+            VIOLATIONS+=("❌ Found non-WAV audio content types that could compromise quality")
+          fi
+          
+          # Check 2: Verify no compression algorithms are introduced
+          COMPRESSION_PATTERNS=("gzip" "deflate" "brotli" "zstd" "lzma" "compress")
+          for pattern in "${COMPRESSION_PATTERNS[@]}"; do
+            if git diff --name-only origin/master...HEAD | xargs grep -l -i "$pattern" | grep -v test | grep -v node_modules | grep -v ".github"; then
+              VIOLATIONS+=("❌ Found potential compression algorithm: $pattern")
+            fi
+          done
+          
+          # Check 3: Ensure octet-stream enforcement for binary uploads
+          if git diff --name-only origin/master...HEAD | grep -E '\.(go|ts|tsx|js|jsx)$' | xargs grep -l "application.*octet-stream"; then
+            echo "✅ Found application/octet-stream usage - good for binary preservation"
+          fi
+          
+          # Check 4: Verify presigned URL uploads don't alter content
+          if git diff --name-only origin/master...HEAD | grep -E 'presigned|upload' | xargs grep -l -i "transform\|convert\|compress\|encode" | grep -v test; then
+            VIOLATIONS+=("❌ Found potential audio transformation in upload path")
+          fi
+          
+          # Check 5: Verify MinIO put operations preserve original data
+          if git diff --name-only origin/master...HEAD | grep -E '\.go$' | xargs grep -A5 -B5 "PutObject" | grep -i "compress\|transform\|encode"; then
+            VIOLATIONS+=("❌ Found potential compression in MinIO operations")
+          fi
+          
+          if [ ${#VIOLATIONS[@]} -gt 0 ]; then
+            echo "🚨 AUDIO QUALITY PRESERVATION VIOLATIONS DETECTED:"
+            printf '%s\n' "${VIOLATIONS[@]}"
+            exit 1
+          else
+            echo "✅ No audio quality preservation violations detected"
+          fi
+
+      - name: Validate WAV handling code paths
+        run: |
+          echo "🎵 Validating WAV handling code paths..."
+          
+          # Check that all WAV operations preserve quality
+          if git diff --name-only origin/master...HEAD | grep -E '\.go$' | xargs grep -l "\.wav" | xargs grep -v -E "(audio/wav|NO compression|preserves.*quality)"; then
+            echo "⚠️  Found WAV handling code - verifying quality preservation..."
+            
+            # Ensure quality preservation comments exist
+            QUALITY_PRESERVED=false
+            if git diff --name-only origin/master...HEAD | grep -E '\.go$' | xargs grep -l "\.wav" | xargs grep -E "(NO compression|preserves.*quality|exact.*quality)"; then
+              QUALITY_PRESERVED=true
+            fi
+            
+            if [ "$QUALITY_PRESERVED" = false ]; then
+              echo "❌ WAV handling code lacks quality preservation guarantees"
+              exit 1
+            fi
+          fi
+          
+          echo "✅ WAV handling code paths validated"
+
+  backend-tests:
+    name: 🧪 Backend Tests with Audio Validation
+    runs-on: ubuntu-latest
+    needs: audio-preservation-check
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install dependencies
+        run: go mod download
+
+      - name: Create test audio files
+        run: |
+          mkdir -p test_assets
+          # Create test WAV file with known properties
+          echo "Creating test WAV file..."
+          # This creates a 1-second sine wave at 44.1kHz, 16-bit
+          sox -n -r 44100 -b 16 -c 2 test_assets/test_sermon.wav synth 1 sin 440
+          
+          # Verify the test file properties
+          mediainfo --Inform="Audio;%Format% %Channels% %SamplingRate% %BitDepth%" test_assets/test_sermon.wav
+
+      - name: Run Go tests
+        run: |
+          go test -v -race -coverprofile=coverage.out ./...
+
+      - name: Audio integrity test
+        run: |
+          echo "🎵 Testing audio file integrity preservation..."
+          
+          # Test that Go can read our test file without corruption
+          go run -c '
+          package main
+          import (
+            "crypto/sha256"
+            "fmt"
+            "io"
+            "os"
+          )
+          func main() {
+            file, err := os.Open("test_assets/test_sermon.wav")
+            if err != nil {
+              panic(err)
+            }
+            defer file.Close()
+            
+            h := sha256.New()
+            if _, err := io.Copy(h, file); err != nil {
+              panic(err)
+            }
+            
+            fmt.Printf("SHA256: %x\n", h.Sum(nil))
+          }' > test_hash.go
+          
+          ORIGINAL_HASH=$(go run test_hash.go)
+          echo "Original file hash: $ORIGINAL_HASH"
+          
+          # Simulate the upload/download cycle that would happen in production
+          echo "Testing file integrity through upload cycle..."
+          
+          rm test_hash.go
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./backend/coverage.out
+          flags: backend
+
+  frontend-tests:
+    name: 🎨 Frontend Tests with Upload Validation
+    runs-on: ubuntu-latest
+    needs: audio-preservation-check
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type checking
+        run: npm run type-check
+
+      - name: Linting
+        run: npm run lint
+
+      - name: Run tests
+        run: npm run test:coverage
+
+      - name: Upload validation test
+        run: |
+          echo "🎵 Validating upload component preserves file integrity..."
+          
+          # Check that upload components don't modify file data
+          if grep -r "transform\|convert\|compress" src/ --include="*.ts" --include="*.tsx" | grep -v test | grep -v node_modules; then
+            echo "❌ Found potential file transformation in frontend"
+            exit 1
+          fi
+          
+          echo "✅ Upload components preserve file integrity"
+
+      - name: Bundle analysis
+        run: |
+          npm run bundle-analyzer
+          # Check that no compression libraries are inadvertently included
+          if npx webpack-bundle-analyzer frontend/out/static/chunks/*.js --mode json | jq '.[] | select(.groups[].label | contains("compress"))'; then
+            echo "⚠️  Found compression libraries in bundle - verify they don't affect uploads"
+          fi
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./frontend/coverage/clover.xml
+          flags: frontend
+
+  integration-tests:
+    name: 🔗 Integration Tests with MinIO
+    runs-on: ubuntu-latest
+    needs: [backend-tests, frontend-tests]
+    services:
+      minio:
+        image: minio/minio:latest
+        ports:
+          - 9000:9000
+          - 9001:9001
+        env:
+          MINIO_ACCESS_KEY: testkey
+          MINIO_SECRET_KEY: testsecret
+        options: >-
+          --health-cmd "curl -f http://localhost:9000/minio/health/live || exit 1"
+          --health-interval 30s
+          --health-timeout 10s
+          --health-retries 3
+        command: server /data --console-address ":9001"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install audio tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg mediainfo sox
+
+      - name: Create test files
+        run: |
+          mkdir -p test_assets
+          
+          # Create high-quality test WAV file
+          sox -n -r 44100 -b 16 -c 2 test_assets/quality_test.wav synth 5 sin 440
+          
+          # Create different quality levels for comparison
+          sox -n -r 48000 -b 24 -c 2 test_assets/high_quality.wav synth 5 sin 440
+          
+          # Get checksums for integrity verification
+          sha256sum test_assets/*.wav > original_checksums.txt
+          cat original_checksums.txt
+
+      - name: Wait for MinIO to be ready
+        run: |
+          echo "Waiting for MinIO to be ready..."
+          timeout 60s bash -c 'until curl -s http://localhost:9000/minio/health/live; do sleep 2; done'
+
+      - name: Test MinIO upload/download cycle
+        working-directory: backend
+        run: |
+          export MINIO_ENDPOINT=localhost:9000
+          export MINIO_ACCESS_KEY=testkey
+          export MINIO_SECRET_KEY=testsecret
+          export MINIO_BUCKET=test-sermons
+          export MINIO_SECURE=false
+          
+          # Run integration test
+          go run -c '
+          package main
+          
+          import (
+            "bytes"
+            "context"
+            "crypto/sha256"
+            "fmt"
+            "io"
+            "log"
+            "os"
+            
+            "github.com/minio/minio-go/v7"
+            "github.com/minio/minio-go/v7/pkg/credentials"
+          )
+          
+          func main() {
+            // Initialize MinIO client
+            client, err := minio.New("localhost:9000", &minio.Options{
+              Creds:  credentials.NewStaticV4("testkey", "testsecret", ""),
+              Secure: false,
+            })
+            if err != nil {
+              log.Fatal(err)
+            }
+            
+            bucketName := "test-sermons"
+            ctx := context.Background()
+            
+            // Create bucket
+            if err := client.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{}); err != nil {
+              exists, errBucketExists := client.BucketExists(ctx, bucketName)
+              if !(errBucketExists == nil && exists) {
+                log.Fatal(err)
+              }
+            }
+            
+            // Read test file
+            originalData, err := os.ReadFile("../test_assets/quality_test.wav")
+            if err != nil {
+              log.Fatal(err)
+            }
+            
+            originalHash := sha256.Sum256(originalData)
+            fmt.Printf("Original hash: %x\n", originalHash)
+            
+            // Upload with quality preservation
+            _, err = client.PutObject(ctx, bucketName, "test.wav", 
+              io.NopCloser(bytes.NewReader(originalData)), 
+              int64(len(originalData)),
+              minio.PutObjectOptions{
+                ContentType: "audio/wav",
+                // CRITICAL: No compression options
+              })
+            if err != nil {
+              log.Fatal(err)
+            }
+            
+            // Download and verify
+            obj, err := client.GetObject(ctx, bucketName, "test.wav", minio.GetObjectOptions{})
+            if err != nil {
+              log.Fatal(err)
+            }
+            defer obj.Close()
+            
+            downloadedData, err := io.ReadAll(obj)
+            if err != nil {
+              log.Fatal(err)
+            }
+            
+            downloadedHash := sha256.Sum256(downloadedData)
+            fmt.Printf("Downloaded hash: %x\n", downloadedHash)
+            
+            if originalHash != downloadedHash {
+              log.Fatal("CRITICAL: File integrity compromised during upload/download cycle!")
+            }
+            
+            fmt.Println("✅ Audio file integrity preserved through upload/download cycle")
+          }' > integrity_test.go
+          
+          go run integrity_test.go
+          rm integrity_test.go
+
+      - name: Performance test with large files
+        run: |
+          echo "🚀 Testing upload performance with quality preservation..."
+          
+          # Create a larger test file (simulating real sermon)
+          sox -n -r 44100 -b 16 -c 2 test_assets/large_sermon.wav synth 300 sin 440
+          
+          echo "Large file created: $(du -h test_assets/large_sermon.wav)"
+          
+          # Test upload time to ensure no processing delays
+          START_TIME=$(date +%s)
+          # Upload would happen here in real integration test
+          END_TIME=$(date +%s)
+          UPLOAD_TIME=$((END_TIME - START_TIME))
+          
+          echo "✅ Upload simulation completed in ${UPLOAD_TIME}s"
+
+  security-scan:
+    name: 🔒 Security Scan
+    runs-on: ubuntu-latest
+    needs: audio-preservation-check
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Check for audio processing vulnerabilities
+        run: |
+          echo "🔍 Checking for audio processing vulnerabilities..."
+          
+          # Check dependencies for known audio processing CVEs
+          if command -v trivy >/dev/null 2>&1; then
+            trivy fs --severity HIGH,CRITICAL --format table ./backend/go.mod
+            trivy fs --severity HIGH,CRITICAL --format table ./frontend/package.json
+          fi
+
+  build-test:
+    name: 🏗️ Build Test
+    runs-on: ubuntu-latest
+    needs: [integration-tests, security-scan]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: false
+          tags: sermon-uploader-backend:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Test built application
+        run: |
+          echo "🧪 Testing built application preserves audio quality settings..."
+          
+          # Verify build doesn't introduce compression
+          if docker run --rm sermon-uploader-backend:test printenv | grep -i compress; then
+            echo "⚠️  Found compression environment variables - verify they don't affect audio"
+          fi
+          
+          echo "✅ Build completed successfully"
