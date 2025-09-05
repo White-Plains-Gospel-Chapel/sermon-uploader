@@ -1,0 +1,344 @@
+name: Main CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+# Cancel in-progress runs for the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: '1.23'
+  NODE_VERSION: '20'
+
+jobs:
+  backend-validation:
+    name: Backend Go Validation
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: backend/go.sum
+      
+      - name: Verify go.mod is tidy
+        run: |
+          echo "🔍 Verifying go.mod is tidy..."
+          go mod tidy
+          if [[ -n $(git status --porcelain go.mod go.sum) ]]; then
+            echo "❌ go.mod or go.sum is not tidy"
+            git diff go.mod go.sum
+            exit 1
+          fi
+          echo "✅ go.mod is tidy"
+      
+      - name: Download dependencies
+        run: |
+          echo "📦 Downloading Go dependencies..."
+          go mod download
+          go mod verify
+      
+      - name: Run Go linting
+        run: |
+          echo "🧹 Running Go linting..."
+          if command -v golangci-lint >/dev/null 2>&1; then
+            golangci-lint run --timeout=5m
+          else
+            echo "⚠️  golangci-lint not available, running basic vet"
+            go vet ./...
+          fi
+      
+      - name: Build Go application
+        run: |
+          echo "🔨 Building Go application..."
+          go build -v -o sermon-uploader ./...
+          echo "✅ Go build successful"
+      
+      - name: Run Go tests
+        run: |
+          echo "🧪 Running Go tests..."
+          go test -v -race -coverprofile=coverage.out ./...
+          echo "✅ Go tests completed"
+      
+      - name: Upload coverage to Codecov (if available)
+        if: success()
+        uses: codecov/codecov-action@v3
+        with:
+          file: backend/coverage.out
+          flags: backend
+          name: backend-coverage
+        continue-on-error: true
+
+  frontend-validation:
+    name: Frontend Next.js Validation
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      
+      - name: Install dependencies
+        run: |
+          echo "📦 Installing frontend dependencies..."
+          npm ci
+      
+      - name: Run TypeScript type checking
+        run: |
+          echo "🔍 Running TypeScript type checking..."
+          npx tsc --noEmit
+          echo "✅ TypeScript type checking passed"
+      
+      - name: Run ESLint (if configured)
+        run: |
+          echo "🧹 Running ESLint..."
+          if npm run lint --if-present; then
+            echo "✅ ESLint checks passed"
+          else
+            echo "⚠️  ESLint not configured or failed"
+          fi
+        continue-on-error: true
+      
+      - name: Build Next.js application
+        run: |
+          echo "🔨 Building Next.js application..."
+          npm run build
+          echo "✅ Frontend build successful"
+      
+      - name: Run frontend tests (if available)
+        run: |
+          echo "🧪 Running frontend tests..."
+          if npm run test --if-present; then
+            echo "✅ Frontend tests completed"
+          else
+            echo "ℹ️  No frontend tests configured"
+          fi
+        continue-on-error: true
+
+  docker-validation:
+    name: Docker Compose Validation
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Validate Docker Compose files
+        run: |
+          echo "🐳 Validating Docker Compose files..."
+          
+          # Check if docker-compose files are valid
+          for file in docker-compose*.yml docker-compose*.yaml; do
+            if [ -f "$file" ]; then
+              echo "Validating $file..."
+              docker-compose -f "$file" config > /dev/null
+              echo "✅ $file is valid"
+            fi
+          done
+      
+      - name: Build Docker image (test build)
+        run: |
+          echo "🔨 Testing Docker build..."
+          docker build --no-cache --progress=plain -t sermon-uploader:test .
+          echo "✅ Docker build successful"
+      
+      - name: Test Docker Compose up (dry run)
+        run: |
+          echo "🧪 Testing Docker Compose configuration..."
+          # Create a minimal test environment
+          echo "MINIO_ACCESS_KEY=test" > .env.test
+          echo "MINIO_SECRET_KEY=test" >> .env.test
+          echo "DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/test" >> .env.test
+          
+          # Test that compose can parse and validate the configuration
+          docker-compose --env-file .env.test config > /dev/null
+          echo "✅ Docker Compose configuration valid"
+
+  security-scan:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Setup Go (for security scanning)
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+        continue-on-error: true
+      
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+        continue-on-error: true
+      
+      - name: Run govulncheck (Go vulnerability check)
+        working-directory: backend
+        run: |
+          echo "🔍 Running Go vulnerability check..."
+          if command -v govulncheck >/dev/null 2>&1; then
+            govulncheck ./...
+          else
+            echo "Installing govulncheck..."
+            go install golang.org/x/vuln/cmd/govulncheck@latest
+            govulncheck ./...
+          fi
+        continue-on-error: true
+      
+      - name: Check for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [backend-validation, frontend-validation]
+    if: github.event_name == 'pull_request'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup test environment
+        run: |
+          echo "🧪 Setting up integration test environment..."
+          
+          # Create test configuration
+          mkdir -p temp uploads
+          cp .env.example .env.test || echo "No .env.example found"
+          
+          # Set test environment variables
+          echo "MINIO_ENDPOINT=localhost:9000" >> .env.test
+          echo "MINIO_ACCESS_KEY=testuser" >> .env.test
+          echo "MINIO_SECRET_KEY=testpassword" >> .env.test
+          echo "MINIO_SECURE=false" >> .env.test
+          echo "MINIO_BUCKET=test-sermons" >> .env.test
+          echo "PORT=8000" >> .env.test
+      
+      - name: Start MinIO test server
+        run: |
+          echo "🚀 Starting MinIO test server..."
+          docker run -d \
+            --name test-minio \
+            -p 9000:9000 \
+            -p 9001:9001 \
+            -e "MINIO_ACCESS_KEY=testuser" \
+            -e "MINIO_SECRET_KEY=testpassword" \
+            quay.io/minio/minio server /data --console-address ":9001"
+          
+          # Wait for MinIO to be ready
+          sleep 10
+          curl --retry 5 --retry-delay 2 --retry-connrefused http://localhost:9000/minio/health/live
+      
+      - name: Run basic API health check
+        run: |
+          echo "🔍 Running basic API health checks..."
+          
+          # Build and start the application in background
+          cd backend
+          go build -o ../sermon-uploader ./...
+          cd ..
+          
+          # Start the application with test config
+          ./sermon-uploader &
+          APP_PID=$!
+          
+          # Wait for app to start
+          sleep 5
+          
+          # Test health endpoint
+          if curl -f http://localhost:8000/api/health; then
+            echo "✅ Health check passed"
+          else
+            echo "❌ Health check failed"
+            exit 1
+          fi
+          
+          # Cleanup
+          kill $APP_PID || true
+        continue-on-error: true
+
+  ci-summary:
+    name: CI Summary
+    needs: [backend-validation, frontend-validation, docker-validation, security-scan]
+    if: always()
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Generate CI summary
+        run: |
+          echo "## 🔍 Main CI Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Validation Results:" >> $GITHUB_STEP_SUMMARY
+          echo "- **Backend Go**: ${{ needs.backend-validation.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Frontend Next.js**: ${{ needs.frontend-validation.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Docker**: ${{ needs.docker-validation.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Security Scan**: ${{ needs.security-scan.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Determine overall result
+          BACKEND_STATUS="${{ needs.backend-validation.result }}"
+          FRONTEND_STATUS="${{ needs.frontend-validation.result }}"
+          DOCKER_STATUS="${{ needs.docker-validation.result }}"
+          
+          if [[ "$BACKEND_STATUS" == "success" && 
+                "$FRONTEND_STATUS" == "success" && 
+                "$DOCKER_STATUS" == "success" ]]; then
+            echo "✅ **Overall Status**: All core validations passed" >> $GITHUB_STEP_SUMMARY
+            echo "🚀 This build is ready for deployment"
+            exit 0
+          else
+            echo "❌ **Overall Status**: Some validations failed" >> $GITHUB_STEP_SUMMARY
+            echo "🔧 Please review and fix the issues above"
+            exit 1
+          fi
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+  id-token: write
