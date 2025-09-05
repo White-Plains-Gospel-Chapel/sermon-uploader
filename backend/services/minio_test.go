@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	
+
 	"sermon-uploader/config"
 )
 
@@ -121,7 +121,7 @@ func TestConnectionPoolStats(t *testing.T) {
 
 	stats := service.GetConnectionPoolStats()
 	assert.NotNil(t, stats)
-	
+
 	// Initial stats should be zero or reasonable defaults
 	assert.Contains(t, stats, "active")
 	assert.Contains(t, stats, "idle")
@@ -139,7 +139,7 @@ func TestRetryConfiguration(t *testing.T) {
 		IOBufferSize:   32768,
 	}
 
-	service := NewMinIOService(cfg)
+	_ = NewMinIOService(cfg)
 
 	// Test retry config values (private, but we can test behavior)
 	retryConfig := RetryConfig{
@@ -161,10 +161,10 @@ func TestRetryConfiguration(t *testing.T) {
 func TestProgressReader(t *testing.T) {
 	testData := []byte("test data for progress tracking")
 	reader := bytes.NewReader(testData)
-	
+
 	var progressCalled bool
 	var lastProgress int64
-	
+
 	progressReader := &ProgressReader{
 		Reader: reader,
 		Size:   int64(len(testData)),
@@ -301,7 +301,7 @@ func BenchmarkCalculateFileHash(b *testing.B) {
 
 	service := NewMinIOService(cfg)
 	testData := make([]byte, 1024) // 1KB test data
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = service.CalculateFileHash(testData)
@@ -311,16 +311,16 @@ func BenchmarkCalculateFileHash(b *testing.B) {
 // Benchmark progress reader
 func BenchmarkProgressReader(b *testing.B) {
 	testData := make([]byte, 1024) // 1KB test data
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		reader := bytes.NewReader(testData)
 		progressReader := &ProgressReader{
-			Reader: reader,
-			Size:   int64(len(testData)),
+			Reader:   reader,
+			Size:     int64(len(testData)),
 			Callback: func(int64) {}, // No-op callback
 		}
-		
+
 		buf := make([]byte, 256)
 		for {
 			_, err := progressReader.Read(buf)
@@ -343,11 +343,11 @@ func TestGetObjectPath(t *testing.T) {
 	}
 
 	service := NewMinIOService(cfg)
-	
+
 	// Test that object path is filename directly (no subfolders)
 	filename := "test.wav"
 	path := service.getObjectPath(filename)
-	
+
 	assert.Equal(t, filename, path)
 }
 
@@ -363,9 +363,9 @@ func TestMetricsThreadSafety(t *testing.T) {
 	}
 
 	service := NewMinIOService(cfg)
-	
+
 	done := make(chan bool, 10)
-	
+
 	// Run multiple goroutines accessing metrics
 	for i := 0; i < 10; i++ {
 		go func() {
@@ -374,7 +374,7 @@ func TestMetricsThreadSafety(t *testing.T) {
 			done <- true
 		}()
 	}
-	
+
 	// Wait for all goroutines to complete
 	for i := 0; i < 10; i++ {
 		<-done
@@ -393,15 +393,15 @@ func TestUpdateUploadMetrics(t *testing.T) {
 	}
 
 	service := NewMinIOService(cfg)
-	
+
 	// Test updating upload metrics
 	duration := 5 * time.Second
 	service.updateUploadMetrics(duration, true)
-	
+
 	metrics := service.GetMetrics()
 	assert.Equal(t, duration, metrics.UploadLatency)
 	assert.Equal(t, int64(1), metrics.MultipartUploads)
-	
+
 	// Test non-multipart upload
 	service.updateUploadMetrics(duration, false)
 	metrics = service.GetMetrics()
