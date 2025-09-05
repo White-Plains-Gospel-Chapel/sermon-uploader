@@ -14,11 +14,11 @@ import (
 
 // TUSService handles resumable file uploads using the TUS protocol
 type TUSService struct {
-	config      *config.Config
-	streaming   *StreamingService
-	tempDir     string
-	uploads     map[string]*TUSUpload
-	mu          sync.RWMutex
+	config    *config.Config
+	streaming *StreamingService
+	tempDir   string
+	uploads   map[string]*TUSUpload
+	mu        sync.RWMutex
 }
 
 // TUSUpload represents an active upload session

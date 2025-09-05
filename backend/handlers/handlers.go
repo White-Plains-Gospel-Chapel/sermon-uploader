@@ -482,11 +482,11 @@ func (h *Handlers) UploadStreamingFiles(c *fiber.Ctx) error {
 
 // GetTUSConfiguration returns TUS protocol configuration
 func (h *Handlers) GetTUSConfiguration(c *fiber.Ctx) error {
-	return c.Set("Tus-Resumable", "1.0.0").
-		Set("Tus-Version", "1.0.0").
-		Set("Tus-Max-Size", "5368709120"). // 5GB
-		Set("Tus-Extension", "creation,expiration,checksum").
-		SendStatus(204)
+	c.Set("Tus-Resumable", "1.0.0")
+	c.Set("Tus-Version", "1.0.0")
+	c.Set("Tus-Max-Size", "5368709120") // 5GB
+	c.Set("Tus-Extension", "creation,expiration,checksum")
+	return c.SendStatus(204)
 }
 
 // CreateTUSUpload creates a new TUS upload session
@@ -521,9 +521,9 @@ func (h *Handlers) CreateTUSUpload(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	return c.Set("Location", response.Location).
-		Set("Tus-Resumable", "1.0.0").
-		Status(201).JSON(response)
+	c.Set("Location", response.Location)
+	c.Set("Tus-Resumable", "1.0.0")
+	return c.Status(201).JSON(response)
 }
 
 // GetTUSUploadInfo returns information about a TUS upload session
@@ -539,10 +539,10 @@ func (h *Handlers) GetTUSUploadInfo(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	return c.Set("Upload-Offset", fmt.Sprintf("%d", info.Offset)).
-		Set("Upload-Length", fmt.Sprintf("%d", info.Size)).
-		Set("Tus-Resumable", "1.0.0").
-		SendStatus(200)
+	c.Set("Upload-Offset", fmt.Sprintf("%d", info.Offset))
+	c.Set("Upload-Length", fmt.Sprintf("%d", info.Size))
+	c.Set("Tus-Resumable", "1.0.0")
+	return c.SendStatus(200)
 }
 
 // UploadTUSChunk handles uploading a chunk of data to a TUS session
@@ -568,9 +568,9 @@ func (h *Handlers) UploadTUSChunk(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	return c.Set("Upload-Offset", fmt.Sprintf("%d", info.Offset)).
-		Set("Tus-Resumable", "1.0.0").
-		SendStatus(204)
+	c.Set("Upload-Offset", fmt.Sprintf("%d", info.Offset))
+	c.Set("Tus-Resumable", "1.0.0")
+	return c.SendStatus(204)
 }
 
 // CompleteTUSUpload completes a TUS upload session
@@ -581,7 +581,7 @@ func (h *Handlers) CompleteTUSUpload(c *fiber.Ctx) error {
 	}
 
 	tusService := h.fileService.GetTUSService()
-	
+
 	// Get upload info
 	info, err := tusService.GetUpload(uploadID)
 	if err != nil {
@@ -591,9 +591,9 @@ func (h *Handlers) CompleteTUSUpload(c *fiber.Ctx) error {
 	// Check if upload is complete
 	if info.Offset != info.Size {
 		return c.Status(400).JSON(fiber.Map{
-			"error": "Upload incomplete",
+			"error":  "Upload incomplete",
 			"offset": info.Offset,
-			"size": info.Size,
+			"size":   info.Size,
 		})
 	}
 
@@ -619,11 +619,7 @@ func (h *Handlers) CompleteTUSUpload(c *fiber.Ctx) error {
 	// Clean up TUS session
 	tusService.DeleteUpload(uploadID)
 
-	return c.JSON(fiber.Map{
-		"success": true,
-		"filename": result.Filename,
-		"size": len(data),
-	})
+	return c.JSON(result)
 }
 
 // DeleteTUSUpload deletes a TUS upload session
@@ -639,7 +635,8 @@ func (h *Handlers) DeleteTUSUpload(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	return c.Set("Tus-Resumable", "1.0.0").SendStatus(204)
+	c.Set("Tus-Resumable", "1.0.0")
+	return c.SendStatus(204)
 }
 
 // GetStreamingStats returns streaming performance statistics
@@ -660,10 +657,10 @@ func (h *Handlers) GetStreamingStats(c *fiber.Ctx) error {
 func (h *Handlers) GetCompressionStats(c *fiber.Ctx) error {
 	// Return compression statistics
 	return c.JSON(fiber.Map{
-		"compression_enabled": true,
+		"compression_enabled":  true,
 		"algorithms_supported": []string{"gzip", "brotli"},
-		"average_ratio": 0.7,
-		"total_saved_bytes": 0,
+		"average_ratio":        0.7,
+		"total_saved_bytes":    0,
 	})
 }
 
@@ -693,238 +690,30 @@ func (h *Handlers) VerifyFileIntegrity(c *fiber.Ctx) error {
 	verified := actualHash == expectedHash
 
 	return c.JSON(fiber.Map{
-		"filename": filename,
+		"filename":      filename,
 		"expected_hash": expectedHash,
-		"actual_hash": actualHash,
-		"verified": verified,
-		"size": len(data),
+		"actual_hash":   actualHash,
+		"verified":      verified,
+		"size":          len(data),
 	})
 }
 
-// UploadStreamingFiles handles streaming file uploads
-func (h *Handlers) UploadStreamingFiles(c *fiber.Ctx) error {
-	// Parse multipart form
-	form, err := c.MultipartForm()
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{
-			"success": false,
-			"message": "Failed to parse multipart form",
-			"error":   err.Error(),
-		})
-	}
-
-	files := form.File["files"]
-	if len(files) == 0 {
-		return c.Status(400).JSON(fiber.Map{
-			"success": false,
-			"message": "No files provided",
-		})
-	}
-
-	// Process files using the file service
-	summary, err := h.fileService.ProcessFiles(files)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{
-			"success": false,
-			"message": "Failed to process files",
-			"error":   err.Error(),
-		})
-	}
-
-	return c.JSON(fiber.Map{
-		"success": true,
-		"summary": summary,
-	})
-}
-
-// GetTUSConfiguration returns TUS protocol configuration
-func (h *Handlers) GetTUSConfiguration(c *fiber.Ctx) error {
-	c.Set("Tus-Resumable", "1.0.0")
-	c.Set("Tus-Version", "1.0.0")
-	c.Set("Tus-Extension", "creation,expiration,checksum")
-	c.Set("Tus-Max-Size", "1073741824") // 1GB max
-	c.Set("Tus-Checksum-Algorithm", "sha256")
-
-	return c.Status(204).Send(nil)
-}
-
-// CreateTUSUpload creates a new TUS upload session
-func (h *Handlers) CreateTUSUpload(c *fiber.Ctx) error {
-	// Parse upload metadata
-	uploadLength := c.Get("Upload-Length")
-	uploadMetadata := c.Get("Upload-Metadata")
-	filename := c.Get("Filename", "unknown")
-
-	if uploadLength == "" {
-		return c.Status(400).JSON(fiber.Map{
-			"error": "Upload-Length header required",
-		})
-	}
-
-	size := int64(0)
-	if _, err := fmt.Sscanf(uploadLength, "%d", &size); err != nil {
-		return c.Status(400).JSON(fiber.Map{
-			"error": "Invalid Upload-Length header",
-		})
-	}
-
-	// Parse metadata
-	metadata := make(map[string]string)
-	if uploadMetadata != "" {
-		metadata["original"] = uploadMetadata
-	}
-
-	// Create upload session
-	response, err := h.fileService.ProcessFileWithTUS(filename, size, metadata)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{
-			"error": err.Error(),
-		})
-	}
-
-	c.Set("Location", response.Location)
-	c.Set("Tus-Resumable", "1.0.0")
-
-	return c.Status(201).JSON(response)
-}
-
-// GetTUSUploadInfo returns information about a TUS upload session
-func (h *Handlers) GetTUSUploadInfo(c *fiber.Ctx) error {
-	uploadID := c.Params("id")
-	
+// CleanupExpiredUploads cleans up expired TUS upload sessions
+func (h *Handlers) CleanupExpiredUploads(c *fiber.Ctx) error {
+	// Get TUS service and clean up expired uploads
 	tusService := h.fileService.GetTUSService()
-	info, err := tusService.GetUpload(uploadID)
-	if err != nil {
-		return c.Status(404).JSON(fiber.Map{
-			"error": "Upload not found",
-		})
-	}
-
-	c.Set("Upload-Offset", fmt.Sprintf("%d", info.Offset))
-	c.Set("Upload-Length", fmt.Sprintf("%d", info.Size))
-	c.Set("Tus-Resumable", "1.0.0")
-
-	return c.Status(204).Send(nil)
-}
-
-// UploadTUSChunk handles TUS chunk uploads
-func (h *Handlers) UploadTUSChunk(c *fiber.Ctx) error {
-	uploadID := c.Params("id")
-	
-	// Parse offset
-	uploadOffset := c.Get("Upload-Offset")
-	if uploadOffset == "" {
-		return c.Status(400).JSON(fiber.Map{
-			"error": "Upload-Offset header required",
-		})
-	}
-
-	offset := int64(0)
-	if _, err := fmt.Sscanf(uploadOffset, "%d", &offset); err != nil {
-		return c.Status(400).JSON(fiber.Map{
-			"error": "Invalid Upload-Offset header",
-		})
-	}
-
-	// Read chunk data
-	data := c.Body()
-
-	// Process chunk
-	info, err := h.fileService.ProcessTUSChunk(uploadID, offset, data)
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{
-			"error": err.Error(),
-		})
-	}
-
-	c.Set("Upload-Offset", fmt.Sprintf("%d", info.Offset))
-	c.Set("Tus-Resumable", "1.0.0")
-
-	return c.Status(204).Send(nil)
-}
-
-// CompleteTUSUpload completes a TUS upload
-func (h *Handlers) CompleteTUSUpload(c *fiber.Ctx) error {
-	uploadID := c.Params("id")
-	expectedHash := c.Get("Upload-Checksum", "")
-
-	// Complete upload
-	result, err := h.fileService.CompleteTUSUpload(uploadID, expectedHash)
-	if err != nil {
+	if tusService == nil {
 		return c.Status(500).JSON(fiber.Map{
-			"error": err.Error(),
-		})
-	}
-
-	return c.JSON(result)
-}
-
-// DeleteTUSUpload deletes a TUS upload session
-func (h *Handlers) DeleteTUSUpload(c *fiber.Ctx) error {
-	uploadID := c.Params("id")
-	
-	tusService := h.fileService.GetTUSService()
-	err := tusService.DeleteUpload(uploadID)
-	if err != nil {
-		return c.Status(404).JSON(fiber.Map{
-			"error": err.Error(),
-		})
-	}
-
-	c.Set("Tus-Resumable", "1.0.0")
-	return c.Status(204).Send(nil)
-}
-
-// GetStreamingStats returns streaming upload statistics
-func (h *Handlers) GetStreamingStats(c *fiber.Ctx) error {
-	streamingService := h.fileService.GetStreamingService()
-	stats := streamingService.GetStats()
-	
-	return c.JSON(fiber.Map{
-		"success": true,
-		"stats":   stats,
-	})
-}
-
-// GetCompressionStats returns compression statistics
-func (h *Handlers) GetCompressionStats(c *fiber.Ctx) error {
-	// For now, return placeholder stats
-	return c.JSON(fiber.Map{
-		"success": true,
-		"stats": fiber.Map{
-			"compression_ratio": 0.75,
-			"files_compressed":  0,
-			"bytes_saved":       0,
-		},
-	})
-}
-
-// VerifyFileIntegrity verifies the integrity of a file
-func (h *Handlers) VerifyFileIntegrity(c *fiber.Ctx) error {
-	filename := c.Params("filename")
-	expectedHash := c.FormValue("expected_hash")
-	
-	// Get file info from MinIO
-	fileInfo, err := h.minioService.GetFileInfo(filename)
-	if err != nil {
-		return c.Status(404).JSON(fiber.Map{
 			"success": false,
-			"message": "File not found",
-			"error":   err.Error(),
+			"message": "TUS service not available",
 		})
 	}
 
-	// For now, return a simple verification based on existing metadata
-	verified := true
-	if expectedHash != "" && fileInfo["hash"] != expectedHash {
-		verified = false
-	}
+	// Clean up uploads older than 24 hours
+	tusService.CleanupExpiredUploads(24 * time.Hour)
 
 	return c.JSON(fiber.Map{
-		"success":     true,
-		"filename":    filename,
-		"verified":    verified,
-		"actual_hash": fileInfo["hash"],
-		"expected_hash": expectedHash,
+		"success": true,
+		"message": "Expired uploads cleaned up successfully",
 	})
 }

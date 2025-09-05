@@ -13,7 +13,10 @@ import (
 func (f *FileService) ProcessFilesOptimized(files []*multipart.FileHeader) (*UploadSummary, error) {
 	var summary *UploadSummary
 
-	err := f.profiler.ProfileOperation("optimized_file_processing", func() error {
+	timerDone := f.profiler.StartTimer("optimized_file_processing")
+	defer timerDone()
+
+	err := func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
 
@@ -118,7 +121,7 @@ func (f *FileService) ProcessFilesOptimized(files []*multipart.FileHeader) (*Upl
 		f.wsHub.BroadcastUploadComplete(successful, duplicates, failed, uploadResults)
 
 		return nil
-	})
+	}()
 
 	if err != nil {
 		return nil, err

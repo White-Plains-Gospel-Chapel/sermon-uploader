@@ -182,7 +182,10 @@ type UploadSummary struct {
 func (f *FileService) processFileStreaming(fileHeader *multipart.FileHeader) (string, error) {
 	var calculatedHash string
 
-	err := f.profiler.ProfileOperation("hash_calculation", func() error {
+	timerDone := f.profiler.StartTimer("hash_calculation")
+	defer timerDone()
+
+	err := func() error {
 		file, err := fileHeader.Open()
 		if err != nil {
 			return fmt.Errorf("failed to open file: %w", err)
@@ -229,7 +232,7 @@ func (f *FileService) processFileStreaming(fileHeader *multipart.FileHeader) (st
 
 		calculatedHash = hasher.Sum()
 		return nil
-	})
+	}()
 
 	if err != nil {
 		return "", err
