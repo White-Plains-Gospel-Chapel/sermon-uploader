@@ -564,9 +564,7 @@ func (s *MinIOService) UploadFileStreaming(reader io.Reader, originalFilename st
 	s.updateUploadMetrics(uploadDuration, size >= 64*1024*1024)
 
 	// Upload metadata JSON with pooled buffer
-	metadataBuffer, releaseBuffer := s.pools.GetByteBuffer()
-	defer releaseBuffer()
-
+	metadataBuffer := &bytes.Buffer{}
 	encoder := json.NewEncoder(metadataBuffer)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(metadata); err != nil {

@@ -378,3 +378,41 @@ func (s *StreamingService) GetMemoryUsage() map[string]interface{} {
 		"chunk_size_kb":   s.chunkSize / 1024,
 	}
 }
+
+// GetStats returns comprehensive streaming statistics
+func (s *StreamingService) GetStats() map[string]interface{} {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	totalBytesReceived := int64(0)
+	totalChunks := 0
+	activeSessions := 0
+	completedSessions := 0
+	errorSessions := 0
+
+	for _, session := range s.activeStreams {
+		totalBytesReceived += session.BytesReceived
+		totalChunks += session.ChunkCount
+
+		switch session.Status {
+		case "active", "uploading":
+			activeSessions++
+		case "completed":
+			completedSessions++
+		case "error":
+			errorSessions++
+		}
+	}
+
+	return map[string]interface{}{
+		"active_sessions":      activeSessions,
+		"completed_sessions":   completedSessions,
+		"error_sessions":       errorSessions,
+		"total_sessions":       len(s.activeStreams),
+		"total_bytes_received": totalBytesReceived,
+		"total_chunks":         totalChunks,
+		"chunk_size_bytes":     s.chunkSize,
+		"max_memory_bytes":     s.maxMemoryUsage,
+		"memory_usage":         s.GetMemoryUsage(),
+	}
+}
