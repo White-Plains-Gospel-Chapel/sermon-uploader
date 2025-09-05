@@ -253,7 +253,7 @@ jobs:
         
     # Phase 7: Reporting and Artifacts
     - name: Upload Benchmark Results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: go-benchmark-results-${{ matrix.go-version }}
@@ -264,7 +264,7 @@ jobs:
         retention-days: 30
         
     - name: Upload Coverage Report
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: go-coverage-report-${{ matrix.go-version }}
@@ -274,7 +274,7 @@ jobs:
         retention-days: 30
         
     - name: Upload Pi Binaries
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: pi-binaries-${{ matrix.go-version }}
@@ -328,7 +328,7 @@ jobs:
         go-version: ${{ env.GO_VERSION }}
         
     - name: Download Pi Binaries
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: pi-binaries-${{ env.GO_VERSION }}
         path: backend/
@@ -366,7 +366,7 @@ jobs:
         go-version: ${{ env.GO_VERSION }}
         
     - name: Download Benchmark Results
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: go-benchmark-results-${{ env.GO_VERSION }}
         path: ./

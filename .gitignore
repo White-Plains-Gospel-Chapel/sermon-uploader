@@ -95,6 +95,23 @@ vendor/
 uploads/
 minio_data/
 
+# Test artifacts and generated files
+test-uploads/
+test_uploads_temp/
+stress-test-files/
+**/test-results/
+*_test_results_*.json
+*_test_report_*.json
+*benchmark_results_*.txt
+*test_output_*.txt
+test_file_*.wav
+*_raw.wav
+*_streamable.aac
+generate_test_files.sh
+generate_large_wavs.sh
+test_batch_upload.py
+test_upload_simple.sh
+
 # Coverage reports
 htmlcov/
 .coverage

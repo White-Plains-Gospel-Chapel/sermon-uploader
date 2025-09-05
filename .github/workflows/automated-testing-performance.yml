@@ -147,7 +147,7 @@ jobs:
           fi
 
       - name: Upload test results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: test-results-${{ matrix.component }}
@@ -381,7 +381,7 @@ jobs:
           EOF
 
       - name: Upload integration test results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: integration-test-results
           path: integration-test-report.md
@@ -501,7 +501,7 @@ jobs:
           npx playwright test --reporter=html || echo "E2E tests completed with warnings"
 
       - name: Upload Playwright report
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: playwright-report
@@ -663,7 +663,7 @@ jobs:
           echo "- Set up monitoring alerts for performance degradation" >> performance-report.md
 
       - name: Upload performance results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: performance-test-results
@@ -685,7 +685,7 @@ jobs:
     
     steps:
       - name: Download all test artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           path: test-results/
 
@@ -798,7 +798,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload comprehensive test report
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: comprehensive-test-report
           path: comprehensive-test-report.md
