@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"mime/multipart"
+	"strconv"
 	"strings"
 	"time"
 
@@ -470,4 +471,423 @@ func (h *Handlers) MigrateMinIO(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(response)
+}
+
+// CreateTUSUpload creates a new TUS upload session
+func (h *Handlers) CreateTUSUpload(c *fiber.Ctx) error {
+	// Parse upload metadata
+	uploadLength := c.Get("Upload-Length")
+	uploadMetadata := c.Get("Upload-Metadata")
+
+	if uploadLength == "" {
+		return c.Status(400).JSON(fiber.Map{
+			"success": false,
+			"message": "Upload-Length header is required",
+		})
+	}
+
+	size, err := strconv.ParseInt(uploadLength, 10, 64)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{
+			"success": false,
+			"message": "Invalid Upload-Length header",
+			"error":   err.Error(),
+		})
+	}
+
+	// Parse metadata
+	tusService := h.fileService.GetTUSService()
+	metadata, err := tusService.ParseMetadata(uploadMetadata)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{
+			"success": false,
+			"message": "Invalid Upload-Metadata header",
+			"error":   err.Error(),
+		})
+	}
+
+	// Extract filename from metadata
+	filename := metadata["filename"]
+	if filename == "" {
+		filename = "unknown.wav"
+	}
+
+	// Create TUS upload
+	response, err := h.fileService.ProcessFileWithTUS(filename, size, metadata)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{
+			"success": false,
+			"message": "Failed to create TUS upload",
+			"error":   err.Error(),
+		})
+	}
+
+	// Set TUS response headers
+	c.Set("Location", response.Location)
+	c.Set("Upload-Offset", "0")
+	c.Set("Tus-Resumable", "1.0.0")
+
+	return c.Status(201).JSON(fiber.Map{
+		"success":   true,
+		"upload_id": response.ID,
+		"location":  response.Location,
+	})
+}
+
+// GetTUSUploadInfo returns information about a TUS upload
+func (h *Handlers) GetTUSUploadInfo(c *fiber.Ctx) error {
+	uploadID := c.Params("id")
+	if uploadID == "" {
+		return c.Status(400).JSON(fiber.Map{
+			"success": false,
+			"message": "Upload ID is required",
+		})
+	}
+
+	tusService := h.fileService.GetTUSService()
+	info, err := tusService.GetUpload(uploadID)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{
+			"success": false,
+			"message": "Upload not found",
+			"error":   err.Error(),
+		})
+	}
+
+	// Set TUS response headers
+	c.Set("Upload-Offset", fmt.Sprintf("%d", info.Offset))
+	c.Set("Upload-Length", fmt.Sprintf("%d", info.Size))
+	c.Set("Tus-Resumable", "1.0.0")
+
+	if info.Metadata != nil && len(info.Metadata) > 0 {
+		c.Set("Upload-Metadata", tusService.FormatMetadata(info.Metadata))
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"upload":  info,
+	})
+}
+
+// UploadTUSChunk uploads a chunk to a TUS upload session
+func (h *Handlers) UploadTUSChunk(c *fiber.Ctx) error {
+	uploadID := c.Params("id")
+	if uploadID == "" {
+		return c.Status(400).JSON(fiber.Map{
+			"success": false,
+			"message": "Upload ID is required",
+		})
+	}
+
+	// Parse offset from header
+	uploadOffset := c.Get("Upload-Offset")
+	if uploadOffset == "" {
+		return c.Status(400).JSON(fiber.Map{
+			"success": false,
+			"message": "Upload-Offset header is required",
+		})
+	}
+
+	offset, err := strconv.ParseInt(uploadOffset, 10, 64)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{
+			"success": false,
+			"message": "Invalid Upload-Offset header",
+			"error":   err.Error(),
+		})
+	}
+
+	// Read chunk data from request body
+	body := c.Body()
+	if len(body) == 0 {
+		return c.Status(400).JSON(fiber.Map{
+			"success": false,
+			"message": "No data in request body",
+		})
+	}
+
+	// Validate offset matches server state
+	tusService := h.fileService.GetTUSService()
+	if err := tusService.ValidateUploadOffset(uploadID, offset); err != nil {
+		return c.Status(409).JSON(fiber.Map{
+			"success": false,
+			"message": "Offset conflict",
+			"error":   err.Error(),
+		})
+	}
+
+	// Process the chunk
+	info, err := h.fileService.ProcessTUSChunk(uploadID, offset, body)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{
+			"success": false,
+			"message": "Failed to process chunk",
+			"error":   err.Error(),
+		})
+	}
+
+	// Set response headers
+	c.Set("Upload-Offset", fmt.Sprintf("%d", info.Offset))
+	c.Set("Tus-Resumable", "1.0.0")
+
+	// Check if upload is complete
+	if info.IsComplete {
+		// Broadcast completion via WebSocket
+		h.wsHub.BroadcastFileProgress(info.Filename, "tus_complete", "TUS upload completed", info.Progress)
+
+		return c.Status(200).JSON(fiber.Map{
+			"success":  true,
+			"complete": true,
+			"upload":   info,
+			"message":  "Upload completed successfully",
+		})
+	}
+
+	// Broadcast progress via WebSocket
+	h.wsHub.BroadcastFileProgress(info.Filename, "tus_progress",
+		fmt.Sprintf("Progress: %.1f%%", info.Progress), info.Progress)
+
+	return c.Status(204).Send(nil)
+}
+
+// CompleteTUSUpload completes a TUS upload and transfers to MinIO
+func (h *Handlers) CompleteTUSUpload(c *fiber.Ctx) error {
+	uploadID := c.Params("id")
+	if uploadID == "" {
+		return c.Status(400).JSON(fiber.Map{
+			"success": false,
+			"message": "Upload ID is required",
+		})
+	}
+
+	// Get expected hash from request
+	expectedHash := c.Query("hash")
+	if expectedHash == "" {
+		return c.Status(400).JSON(fiber.Map{
+			"success": false,
+			"message": "Expected hash is required",
+		})
+	}
+
+	// Complete the TUS upload
+	result, err := h.fileService.CompleteTUSUpload(uploadID, expectedHash)
+	if err != nil {
+		h.wsHub.BroadcastError(fmt.Sprintf("TUS completion failed: %v", err))
+		return c.Status(500).JSON(fiber.Map{
+			"success": false,
+			"message": "Failed to complete TUS upload",
+			"error":   err.Error(),
+		})
+	}
+
+	if result.Status == "error" {
+		h.wsHub.BroadcastFileProgress(result.Filename, "error", result.Message, 100)
+		return c.Status(400).JSON(fiber.Map{
+			"success": false,
+			"message": result.Message,
+			"result":  result,
+		})
+	}
+
+	// Broadcast success
+	h.wsHub.BroadcastFileProgress(result.Filename, "success", "Upload completed and verified", 100)
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"message": "Upload completed successfully",
+		"result":  result,
+	})
+}
+
+// UploadStreamingFiles handles streaming file uploads with concurrent processing
+func (h *Handlers) UploadStreamingFiles(c *fiber.Ctx) error {
+	// Parse multipart form
+	form, err := c.MultipartForm()
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{
+			"success": false,
+			"message": "Failed to parse multipart form",
+			"error":   err.Error(),
+		})
+	}
+
+	files := form.File["files"]
+	if len(files) == 0 {
+		return c.Status(400).JSON(fiber.Map{
+			"success": false,
+			"message": "No files provided",
+		})
+	}
+
+	// Filter for WAV files only
+	var wavFiles []*multipart.FileHeader
+	for _, file := range files {
+		if strings.HasSuffix(strings.ToLower(file.Filename), ".wav") {
+			wavFiles = append(wavFiles, file)
+		}
+	}
+
+	if len(wavFiles) == 0 {
+		return c.Status(400).JSON(fiber.Map{
+			"success": false,
+			"message": "No WAV files found in upload",
+		})
+	}
+
+	// Use concurrent processing for better performance on Pi
+	summary, err := h.fileService.ProcessConcurrentFiles(wavFiles)
+	if err != nil {
+		h.wsHub.BroadcastError(err.Error())
+		return c.Status(500).JSON(fiber.Map{
+			"success": false,
+			"message": "Streaming file processing failed",
+			"error":   err.Error(),
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"success":     summary.Failed == 0,
+		"message":     "Streaming upload processing complete",
+		"total_files": summary.Total,
+		"successful":  summary.Successful,
+		"duplicates":  summary.Duplicates,
+		"failed":      summary.Failed,
+		"results":     summary.Results,
+	})
+}
+
+// GetStreamingStats returns streaming upload statistics
+func (h *Handlers) GetStreamingStats(c *fiber.Ctx) error {
+	streamingService := h.fileService.GetStreamingService()
+	tusService := h.fileService.GetTUSService()
+
+	stats := map[string]interface{}{
+		"streaming":                 streamingService.GetMemoryUsage(),
+		"tus":                       tusService.GetUploadStats(),
+		"active_streaming_sessions": streamingService.GetActiveSessionsCount(),
+		"active_tus_uploads":        tusService.GetActiveUploadsCount(),
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"stats":   stats,
+	})
+}
+
+// GetCompressionStats returns compression and quality statistics
+func (h *Handlers) GetCompressionStats(c *fiber.Ctx) error {
+	stats, err := h.minioService.GetZeroCompressionStats()
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{
+			"success": false,
+			"message": "Failed to get compression stats",
+			"error":   err.Error(),
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"stats":   stats,
+	})
+}
+
+// DeleteTUSUpload deletes a TUS upload session
+func (h *Handlers) DeleteTUSUpload(c *fiber.Ctx) error {
+	uploadID := c.Params("id")
+	if uploadID == "" {
+		return c.Status(400).JSON(fiber.Map{
+			"success": false,
+			"message": "Upload ID is required",
+		})
+	}
+
+	tusService := h.fileService.GetTUSService()
+	if err := tusService.DeleteUpload(uploadID); err != nil {
+		return c.Status(500).JSON(fiber.Map{
+			"success": false,
+			"message": "Failed to delete upload",
+			"error":   err.Error(),
+		})
+	}
+
+	c.Set("Tus-Resumable", "1.0.0")
+	return c.Status(204).Send(nil)
+}
+
+// GetTUSConfiguration returns TUS protocol configuration
+func (h *Handlers) GetTUSConfiguration(c *fiber.Ctx) error {
+	tusService := h.fileService.GetTUSService()
+	config := tusService.GetTUSConfiguration()
+
+	// Set TUS headers
+	c.Set("Tus-Resumable", "1.0.0")
+	c.Set("Tus-Version", "1.0.0")
+	c.Set("Tus-Max-Size", fmt.Sprintf("%d", config["max_size"]))
+	c.Set("Tus-Extension", "creation,termination,checksum")
+	c.Set("Tus-Checksum-Algorithm", "sha256")
+
+	return c.JSON(config)
+}
+
+// VerifyFileIntegrity verifies the integrity of an uploaded file
+func (h *Handlers) VerifyFileIntegrity(c *fiber.Ctx) error {
+	filename := c.Params("filename")
+	expectedHash := c.Query("hash")
+
+	if filename == "" {
+		return c.Status(400).JSON(fiber.Map{
+			"success": false,
+			"message": "Filename is required",
+		})
+	}
+
+	if expectedHash == "" {
+		return c.Status(400).JSON(fiber.Map{
+			"success": false,
+			"message": "Expected hash is required",
+		})
+	}
+
+	result, err := h.minioService.VerifyUploadIntegrity(filename, expectedHash)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{
+			"success": false,
+			"message": "Failed to verify file integrity",
+			"error":   err.Error(),
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"success":         true,
+		"integrity_check": result,
+	})
+}
+
+// CleanupExpiredUploads cleans up expired TUS uploads
+func (h *Handlers) CleanupExpiredUploads(c *fiber.Ctx) error {
+	// Get max age from query parameter (default 24 hours)
+	maxAgeHours := c.QueryInt("max_age_hours", 24)
+	maxAge := time.Duration(maxAgeHours) * time.Hour
+
+	tusService := h.fileService.GetTUSService()
+	streamingService := h.fileService.GetStreamingService()
+
+	// Cleanup expired uploads
+	tusCount, err := tusService.CleanupExpired(maxAge)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{
+			"success": false,
+			"message": "Failed to cleanup TUS uploads",
+			"error":   err.Error(),
+		})
+	}
+
+	streamingCount := streamingService.CleanupExpiredSessions(maxAge)
+
+	return c.JSON(fiber.Map{
+		"success":           true,
+		"message":           fmt.Sprintf("Cleanup completed: %d TUS uploads, %d streaming sessions", tusCount, streamingCount),
+		"tus_cleaned":       tusCount,
+		"streaming_cleaned": streamingCount,
+	})
 }
