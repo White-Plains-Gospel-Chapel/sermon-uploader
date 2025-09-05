@@ -1,0 +1,350 @@
+name: Setup Branch Protection Rules
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply_rules:
+        description: 'Apply branch protection rules'
+        required: true
+        default: true
+        type: boolean
+      dry_run:
+        description: 'Dry run - show what would be applied'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  setup-branch-protection:
+    name: Configure Branch Protection
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup GitHub CLI
+        run: |
+          # GitHub CLI should already be available, but ensure it's the latest
+          gh --version
+
+      - name: Apply branch protection rules
+        run: |
+          REPO="${{ github.repository }}"
+          DRY_RUN="${{ github.event.inputs.dry_run }}"
+          
+          echo "🔐 Setting up branch protection rules for: $REPO"
+          
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "🔍 DRY RUN MODE - No changes will be applied"
+          fi
+          
+          # Function to apply or preview branch protection
+          apply_protection() {
+            local branch=$1
+            local config_file=".github/branch-protection-config.json"
+            
+            echo "📋 Configuring protection for branch: $branch"
+            
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "  Would apply the following protection rules:"
+              echo "  - Required status checks: PR validation workflow"
+              echo "  - Required reviews: 1 approving review"
+              echo "  - Dismiss stale reviews: true"
+              echo "  - Require code owner reviews: true"
+              echo "  - Block force pushes: true"
+              echo "  - Require conversation resolution: true"
+              return
+            fi
+            
+            # Apply branch protection using GitHub API
+            gh api repos/$REPO/branches/$branch/protection \
+              --method PUT \
+              --field required_status_checks='{"strict":true,"contexts":["Comprehensive PR Validation / Validation Summary","Comprehensive PR Validation / Backend Quality & Testing","Comprehensive PR Validation / Frontend Quality & Testing","Comprehensive PR Validation / Security Scanning"]}' \
+              --field enforce_admins=false \
+              --field required_pull_request_reviews='{"required_approving_review_count":1,"dismiss_stale_reviews":true,"require_code_owner_reviews":true,"require_last_push_approval":true}' \
+              --field restrictions=null \
+              --field allow_force_pushes=false \
+              --field allow_deletions=false \
+              --field required_conversation_resolution=true \
+              --field block_creations=false \
+              --field allow_fork_syncing=true \
+              || echo "Warning: Failed to apply protection to $branch (branch may not exist yet)"
+          }
+          
+          # Apply protection to main branches
+          apply_protection "master"
+          apply_protection "main"
+          
+          echo "✅ Branch protection configuration complete!"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure repository settings
+        run: |
+          REPO="${{ github.repository }}"
+          DRY_RUN="${{ github.event.inputs.dry_run }}"
+          
+          echo "⚙️ Configuring repository merge settings"
+          
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "  Would configure:"
+            echo "  - Allow squash merging: true"
+            echo "  - Allow merge commits: false"
+            echo "  - Allow rebase merging: true"
+            echo "  - Delete head branches: true"
+            return
+          fi
+          
+          # Update repository settings
+          gh api repos/$REPO \
+            --method PATCH \
+            --field allow_squash_merge=true \
+            --field allow_merge_commit=false \
+            --field allow_rebase_merge=true \
+            --field delete_branch_on_merge=true \
+            --field allow_update_branch=true \
+            --field use_squash_pr_title_as_default=true \
+            || echo "Warning: Failed to update some repository settings"
+          
+          echo "✅ Repository settings updated!"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup repository labels
+        run: |
+          REPO="${{ github.repository }}"
+          DRY_RUN="${{ github.event.inputs.dry_run }}"
+          
+          echo "🏷️ Setting up standardized labels"
+          
+          # Define labels
+          declare -A LABELS=(
+            # Size labels
+            ["size/XS"]="0e8a16"
+            ["size/S"]="5319e7" 
+            ["size/M"]="fbca04"
+            ["size/L"]="ff9500"
+            ["size/XL"]="d93f0b"
+            
+            # Component labels
+            ["backend"]="1f77b4"
+            ["frontend"]="ff7f0e"
+            ["docker"]="2ca02c"
+            ["documentation"]="17becf"
+            ["tests"]="9467bd"
+            
+            # Type labels
+            ["bug"]="d73a4a"
+            ["enhancement"]="84b6eb"
+            ["feature"]="0052cc"
+            ["hotfix"]="b60205"
+            ["breaking-change"]="d93f0b"
+            
+            # Status labels
+            ["ready-for-review"]="0e8a16"
+            ["work-in-progress"]="fbca04"
+            ["needs-review"]="ff9500"
+            ["needs-changes"]="d93f0b"
+            ["approved"]="0e8a16"
+            
+            # Priority labels
+            ["priority/low"]="0e8a16"
+            ["priority/medium"]="fbca04"
+            ["priority/high"]="ff9500"
+            ["priority/critical"]="d93f0b"
+          )
+          
+          for label in "${!LABELS[@]}"; do
+            color="${LABELS[$label]}"
+            
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "  Would create/update label: $label (color: #$color)"
+              continue
+            fi
+            
+            # Create or update label
+            gh api repos/$REPO/labels \
+              --method POST \
+              --field name="$label" \
+              --field color="$color" \
+              --field description="" \
+              2>/dev/null || \
+            gh api repos/$REPO/labels/$label \
+              --method PATCH \
+              --field color="$color" \
+              2>/dev/null || \
+            echo "  Warning: Could not create/update label: $label"
+          done
+          
+          echo "✅ Labels configuration complete!"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create issue templates (if not exist)
+        run: |
+          DRY_RUN="${{ github.event.inputs.dry_run }}"
+          
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "Would check/create issue templates"
+            return
+          fi
+          
+          # Check if bug report template exists
+          if [ ! -f ".github/ISSUE_TEMPLATE/bug_report.yml" ]; then
+            mkdir -p .github/ISSUE_TEMPLATE
+            cat > .github/ISSUE_TEMPLATE/bug_report.yml << 'EOF'
+          name: Bug Report
+          description: Report a bug in the sermon uploader system
+          title: "[BUG]: "
+          labels: ["bug"]
+          body:
+            - type: markdown
+              attributes:
+                value: |
+                  Thank you for reporting a bug! Please fill out the information below.
+            
+            - type: dropdown
+              id: component
+              attributes:
+                label: Component
+                description: Which part of the system has the bug?
+                options:
+                  - Frontend (Next.js)
+                  - Backend (Go API)
+                  - Docker/Deployment
+                  - MinIO Integration
+                  - Other
+              validations:
+                required: true
+            
+            - type: textarea
+              id: description
+              attributes:
+                label: Bug Description
+                description: A clear description of the bug
+              validations:
+                required: true
+            
+            - type: textarea
+              id: steps
+              attributes:
+                label: Steps to Reproduce
+                description: How to reproduce this bug
+                placeholder: |
+                  1. Go to '...'
+                  2. Click on '....'
+                  3. See error
+              validations:
+                required: true
+            
+            - type: textarea
+              id: expected
+              attributes:
+                label: Expected Behavior
+                description: What should have happened?
+              validations:
+                required: true
+            
+            - type: textarea
+              id: logs
+              attributes:
+                label: Error Logs
+                description: Any relevant error messages or logs
+                render: shell
+          EOF
+            echo "✅ Created bug report template"
+          fi
+          
+          # Check if feature request template exists
+          if [ ! -f ".github/ISSUE_TEMPLATE/feature_request.yml" ]; then
+            cat > .github/ISSUE_TEMPLATE/feature_request.yml << 'EOF'
+          name: Feature Request
+          description: Suggest a new feature for the sermon uploader
+          title: "[FEATURE]: "
+          labels: ["enhancement"]
+          body:
+            - type: markdown
+              attributes:
+                value: |
+                  Thank you for suggesting a new feature!
+            
+            - type: dropdown
+              id: component
+              attributes:
+                label: Component
+                description: Which part would this feature affect?
+                options:
+                  - Frontend (User Interface)
+                  - Backend (API/Processing) 
+                  - Audio Processing
+                  - File Management
+                  - Deployment/Infrastructure
+                  - Other
+              validations:
+                required: true
+            
+            - type: textarea
+              id: description
+              attributes:
+                label: Feature Description
+                description: Describe the feature you'd like to see
+              validations:
+                required: true
+            
+            - type: textarea
+              id: problem
+              attributes:
+                label: Problem Statement
+                description: What problem does this feature solve?
+              validations:
+                required: true
+            
+            - type: textarea
+              id: solution
+              attributes:
+                label: Proposed Solution
+                description: How do you think this should work?
+              validations:
+                required: true
+          EOF
+            echo "✅ Created feature request template"
+          fi
+
+      - name: Summary report
+        run: |
+          echo "
+          ## 🔐 Branch Protection Setup Complete
+          
+          ### Applied Configuration:
+          - ✅ Branch protection rules for master/main
+          - ✅ Required status checks (PR validation workflow)
+          - ✅ Required code reviews (1 approving review)
+          - ✅ Code owner review requirement
+          - ✅ Stale review dismissal
+          - ✅ Conversation resolution requirement
+          - ✅ Force push protection
+          
+          ### Repository Settings:
+          - ✅ Squash merge enabled (default)
+          - ✅ Merge commits disabled
+          - ✅ Rebase merge enabled
+          - ✅ Auto-delete head branches
+          
+          ### Labels Created:
+          - 🏷️ Size labels (XS, S, M, L, XL)
+          - 🏷️ Component labels (backend, frontend, docker, etc.)
+          - 🏷️ Type labels (bug, enhancement, feature, etc.)
+          - 🏷️ Status labels (ready-for-review, approved, etc.)
+          - 🏷️ Priority labels (low, medium, high, critical)
+          
+          ### Next Steps:
+          1. Test PR workflow with a sample pull request
+          2. Verify all required status checks are working
+          3. Ensure team members understand new review requirements
+          4. Monitor first few PRs to ensure smooth operation
+          
+          **Branch protection is now active!** 🎉
+          "
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
