@@ -32,27 +32,27 @@ type MinIOServiceInterface interface {
 	StoreMetadata(filename string, metadata *services.AudioMetadata) error
 }
 
-// MockMinIOService for testing
-type MockMinIOService struct {
+// MockPresignedMinIOService for testing presigned URL functionality
+type MockPresignedMinIOService struct {
 	mock.Mock
 }
 
-func (m *MockMinIOService) GeneratePresignedUploadURL(filename string, expiry time.Duration) (string, error) {
+func (m *MockPresignedMinIOService) GeneratePresignedUploadURL(filename string, expiry time.Duration) (string, error) {
 	args := m.Called(filename, expiry)
 	return args.String(0), args.Error(1)
 }
 
-func (m *MockMinIOService) CheckDuplicateByFilename(filename string) (bool, error) {
+func (m *MockPresignedMinIOService) CheckDuplicateByFilename(filename string) (bool, error) {
 	args := m.Called(filename)
 	return args.Bool(0), args.Error(1)
 }
 
-func (m *MockMinIOService) FileExists(filename string) (bool, error) {
+func (m *MockPresignedMinIOService) FileExists(filename string) (bool, error) {
 	args := m.Called(filename)
 	return args.Bool(0), args.Error(1)
 }
 
-func (m *MockMinIOService) GetFileInfo(filename string) (*ObjectInfoMock, error) {
+func (m *MockPresignedMinIOService) GetFileInfo(filename string) (*ObjectInfoMock, error) {
 	args := m.Called(filename)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
@@ -60,15 +60,11 @@ func (m *MockMinIOService) GetFileInfo(filename string) (*ObjectInfoMock, error)
 	return args.Get(0).(*ObjectInfoMock), args.Error(1)
 }
 
-func (m *MockMinIOService) StoreMetadata(filename string, metadata *services.AudioMetadata) error {
+func (m *MockPresignedMinIOService) StoreMetadata(filename string, metadata *services.AudioMetadata) error {
 	args := m.Called(filename, metadata)
 	return args.Error(0)
 }
 
-// ObjectInfoMock is a simple mock for minio.ObjectInfo
-type ObjectInfoMock struct {
-	Size int64
-}
 
 // GetPresignedURL is a test version of the handler that works with mocked services
 func (h *TestHandlers) GetPresignedURL(c *fiber.Ctx) error {
@@ -125,7 +121,7 @@ func (h *TestHandlers) GetPresignedURL(c *fiber.Ctx) error {
 // Test large file presigned URL generation - proper unit test
 func TestPresignedURL_LargeFiles_ShouldFail(t *testing.T) {
 	// Create mock services
-	mockMinio := &MockMinIOService{}
+	mockMinio := &MockPresignedMinIOService{}
 	mockConfig := &config.Config{}
 
 	// Set up test handler
@@ -185,7 +181,7 @@ func TestPresignedURL_LargeFiles_ShouldFail(t *testing.T) {
 // Test for API endpoint path correctness - proper unit test
 func TestCorrectAPIEndpointPath(t *testing.T) {
 	// Create mock services
-	mockMinio := &MockMinIOService{}
+	mockMinio := &MockPresignedMinIOService{}
 	mockConfig := &config.Config{}
 
 	// Set up test handler
@@ -229,7 +225,7 @@ func TestCorrectAPIEndpointPath(t *testing.T) {
 // Test for missing fileSize parameter - proper unit test
 func TestPresignedURL_MissingFileSize_ShouldFail(t *testing.T) {
 	// Create mock services
-	mockMinio := &MockMinIOService{}
+	mockMinio := &MockPresignedMinIOService{}
 	mockConfig := &config.Config{}
 
 	// Set up test handler
@@ -271,7 +267,7 @@ func TestPresignedURL_MissingFileSize_ShouldFail(t *testing.T) {
 // Test duplicate file detection
 func TestPresignedURL_Duplicate_ShouldReturnError(t *testing.T) {
 	// Create mock services
-	mockMinio := &MockMinIOService{}
+	mockMinio := &MockPresignedMinIOService{}
 	mockConfig := &config.Config{}
 
 	// Set up test handler
@@ -320,7 +316,7 @@ func TestPresignedURL_Duplicate_ShouldReturnError(t *testing.T) {
 // Test invalid JSON input
 func TestPresignedURL_InvalidJSON_ShouldReturnError(t *testing.T) {
 	// Create mock services
-	mockMinio := &MockMinIOService{}
+	mockMinio := &MockPresignedMinIOService{}
 	mockConfig := &config.Config{}
 
 	// Set up test handler
@@ -358,7 +354,7 @@ func TestPresignedURL_InvalidJSON_ShouldReturnError(t *testing.T) {
 // Test MinIO service error
 func TestPresignedURL_MinIOError_ShouldReturnError(t *testing.T) {
 	// Create mock services
-	mockMinio := &MockMinIOService{}
+	mockMinio := &MockPresignedMinIOService{}
 	mockConfig := &config.Config{}
 
 	// Set up test handler
@@ -406,7 +402,7 @@ func TestPresignedURL_MinIOError_ShouldReturnError(t *testing.T) {
 // Test successful presigned URL generation
 func TestPresignedURL_Success_ShouldReturnURL(t *testing.T) {
 	// Create mock services
-	mockMinio := &MockMinIOService{}
+	mockMinio := &MockPresignedMinIOService{}
 	mockConfig := &config.Config{}
 
 	// Set up test handler
@@ -459,7 +455,7 @@ func TestPresignedURL_Success_ShouldReturnURL(t *testing.T) {
 // Test upload timeout with large files - proper unit test
 func TestLargeFileUploadTimeout_ShouldFail(t *testing.T) {
 	// Create mock services
-	mockMinio := &MockMinIOService{}
+	mockMinio := &MockPresignedMinIOService{}
 	mockConfig := &config.Config{}
 
 	// Set up test handler
@@ -502,7 +498,7 @@ func TestLargeFileUploadTimeout_ShouldFail(t *testing.T) {
 // Test concurrent large file handling - proper unit test
 func TestConcurrentLargeFiles_ShouldFail(t *testing.T) {
 	// Create mock services
-	mockMinio := &MockMinIOService{}
+	mockMinio := &MockPresignedMinIOService{}
 	mockConfig := &config.Config{}
 
 	// Set up test handler

@@ -77,6 +77,9 @@ export function useUploadQueue() {
     
     const batchResponse = await uploadService.getPresignedURLsBatch(batchRequest)
     
+    // Track successful uploads for batch completion
+    const successfulUploads: string[] = []
+    
     // Process each file with its presigned URL
     for (const uploadFile of files) {
       const result = batchResponse.results[uploadFile.file.name]
@@ -98,7 +101,27 @@ export function useUploadQueue() {
         continue
       }
       
-      await uploadSingleFile(uploadFile, result.uploadUrl)
+      // Upload the file but don't call individual completion yet
+      const success = await uploadSingleFileForBatch(uploadFile, result.uploadUrl)
+      if (success) {
+        successfulUploads.push(uploadFile.file.name)
+      }
+    }
+    
+    // Call batch completion endpoint to trigger Discord batch notifications
+    if (successfulUploads.length > 0) {
+      try {
+        await uploadService.completeUploadBatch(successfulUploads)
+        console.log(`✅ Batch completion processed for ${successfulUploads.length} files`)
+      } catch (error) {
+        console.warn(`Batch completion failed, falling back to individual processing:`, error)
+        // Fallback: process individual completions
+        for (const filename of successfulUploads) {
+          uploadService.completeUpload(filename).catch(err => {
+            console.warn(`Individual completion fallback failed for ${filename}:`, err)
+          })
+        }
+      }
     }
   }
 
@@ -143,7 +166,7 @@ export function useUploadQueue() {
       
       updateFile(uploadFile.id, { status: 'success', progress: 100 })
       
-      // Process metadata asynchronously
+      // Process metadata asynchronously (for individual uploads only)
       uploadService.completeUpload(uploadFile.file.name).catch(error => {
         console.warn(`Metadata processing failed for ${uploadFile.file.name}:`, error)
       })
@@ -152,6 +175,29 @@ export function useUploadQueue() {
         status: 'error',
         error: error instanceof Error ? error.message : 'Upload failed'
       })
+    }
+  }
+
+  const uploadSingleFileForBatch = async (uploadFile: UploadFile, uploadUrl: string): Promise<boolean> => {
+    try {
+      updateFile(uploadFile.id, { status: 'uploading', progress: 0 })
+      
+      await uploadService.uploadToMinIO(
+        uploadFile.file,
+        uploadUrl,
+        (progress) => updateFile(uploadFile.id, { progress: Math.round(progress) })
+      )
+      
+      updateFile(uploadFile.id, { status: 'success', progress: 100 })
+      
+      // Don't call individual completion - this will be handled by batch completion
+      return true
+    } catch (error) {
+      updateFile(uploadFile.id, {
+        status: 'error',
+        error: error instanceof Error ? error.message : 'Upload failed'
+      })
+      return false
     }
   }
 
