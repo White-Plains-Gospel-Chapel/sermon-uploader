@@ -83,7 +83,7 @@ Add these secrets **EXACTLY** with these names:
 | `MINIO_SECRET_KEY` | `SuperSecurePassword123!` (create strong password) |
 | `MINIO_SECURE` | `false` |
 | `MINIO_BUCKET` | `sermons` |
-| `DISCORD_WEBHOOK_URL` | `https://discord.com/api/webhooks/1411012857985892412/dMzxtUtXiOCvFR0w8IuzL8mGYwZqFXuwGucT3CnBNjnXgkVxcWPLk5Vlm9lwh72YWP38` |
+| `DISCORD_WEBHOOK_URL` | `https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN` |
 | `WAV_SUFFIX` | `_raw` |
 | `AAC_SUFFIX` | `_streamable` |
 | `BATCH_THRESHOLD` | `2` |

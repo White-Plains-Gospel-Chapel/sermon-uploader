@@ -122,11 +122,14 @@ sermons/
 - Tracks processed files to avoid re-conversion
 - Discord notifications for completion/errors
 
-### Discord Notifications
+### Discord Live Notifications
 - Webhook URL: Configured in environment
 - Channel: sermons-uploading-notif
-- Events: Startup, upload progress, completion, errors
-- Batch handling: Single notification for multiple files
+- Live Updates: Single message that updates in real-time (no spam!)
+- Progress Tracking: Visual progress bars for each file
+- Events: Startup, upload progress, processing, completion, errors
+- Batch handling: One live-updating message per batch
+- Color coding: Orange (in-progress), Green (success), Red (errors)
 
 ## Troubleshooting
 
