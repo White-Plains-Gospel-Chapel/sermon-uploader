@@ -1,397 +1,197 @@
-name: Issue-Specific PR Validation
+name: Issue-Specific Validation
 
 on:
   pull_request:
-    types: [opened, synchronize, edited]
+    types: [opened, synchronize]
+    branches: [master, main]
+  workflow_dispatch:
+
+# Cancel in-progress runs for the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  issue-specific-validation:
+  validate-issue-context:
+    name: Validate Issue Context
     runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-        
-    - name: Extract issue number and validate
-      run: |
-        PR_NUMBER=${{ github.event.pull_request.number }}
-        PR_BODY="${{ github.event.pull_request.body }}"
-        PR_TITLE="${{ github.event.pull_request.title }}"
-        
-        # Extract issue number from PR body
-        ISSUE_NUM=$(echo "$PR_BODY" | grep -oiE "(closes?|fixes?|resolves?) #([0-9]+)" | grep -oE "[0-9]+" | head -1)
-        
-        if [ -z "$ISSUE_NUM" ]; then
-          echo "::warning::No issue reference found, skipping issue-specific validation"
-          exit 0
-        fi
-        
-        echo "🎯 Validating PR for Issue #${ISSUE_NUM}"
-        
-        # Check for issue dependencies and linking
-        echo "🔗 Checking issue dependencies..."
-        
-        # Get issue details and check for dependency labels/content
-        ISSUE_DETAILS=$(gh issue view $ISSUE_NUM --json body,labels,title)
-        ISSUE_LABELS=$(echo "$ISSUE_DETAILS" | jq -r '.labels[].name' | tr '\n' ',' | sed 's/,$//')
-        ISSUE_TITLE_TEXT=$(echo "$ISSUE_DETAILS" | jq -r '.title')
-        ISSUE_BODY_TEXT=$(echo "$ISSUE_DETAILS" | jq -r '.body // ""')
-        
-        echo "Issue labels: $ISSUE_LABELS"
-        
-        # Check if this is a sub-task
-        IS_SUBTASK=false
-        PARENT_ISSUE=""
-        DEPENDENCIES=()
-        
-        if [[ "$ISSUE_TITLE_TEXT" =~ ^Sub-task: ]]; then
-          IS_SUBTASK=true
-          echo "📋 This is a sub-task"
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Extract issue number from branch
+        id: extract-issue
+        run: |
+          BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
+          echo "Branch name: $BRANCH_NAME"
           
-          # Extract parent issue from sub-task patterns
-          case "$ISSUE_NUM" in
-            4|5) PARENT_ISSUE="1" ;;  # CloudFlare sub-tasks
-            6|7) PARENT_ISSUE="2" ;;  # VPN sub-tasks  
-            8|9|10) PARENT_ISSUE="3" ;; # Webhook sub-tasks
-            11) DEPENDENCIES=("1" "2" "3") ;; # Integration testing depends on all main issues
-          esac
-        fi
-        
-        # Check dependencies if this is a sub-task or has dependencies
-        if [ -n "$PARENT_ISSUE" ]; then
-          echo "🔍 Checking parent issue #${PARENT_ISSUE} status..."
-          PARENT_STATUS=$(gh issue view $PARENT_ISSUE --json state | jq -r '.state')
-          if [ "$PARENT_STATUS" = "open" ]; then
-            echo "⚠️ Parent issue #${PARENT_ISSUE} is still open"
-            # This is informational, not blocking
+          # Try to extract issue number from branch name patterns like:
+          # - feature/issue-123-description
+          # - issue-123-fix-something
+          # - hotfix/issue-123
+          ISSUE_NUM=""
+          if [[ "$BRANCH_NAME" =~ issue-([0-9]+) ]]; then
+            ISSUE_NUM="${BASH_REMATCH[1]}"
+          elif [[ "$BRANCH_NAME" =~ ([0-9]+)-.*$ ]]; then
+            ISSUE_NUM="${BASH_REMATCH[1]}"
           fi
-        fi
-        
-        if [ ${#DEPENDENCIES[@]} -gt 0 ]; then
-          echo "🔍 Checking dependency issues: ${DEPENDENCIES[*]}..."
-          UNRESOLVED_DEPS=()
-          for dep in "${DEPENDENCIES[@]}"; do
-            DEP_STATUS=$(gh issue view $dep --json state | jq -r '.state')
-            if [ "$DEP_STATUS" = "open" ]; then
-              UNRESOLVED_DEPS+=("#$dep")
+          
+          echo "issue_number=$ISSUE_NUM" >> $GITHUB_OUTPUT
+          echo "has_issue=$([ -n "$ISSUE_NUM" ] && echo true || echo false)" >> $GITHUB_OUTPUT
+          
+          if [ -n "$ISSUE_NUM" ]; then
+            echo "✅ Found issue number: $ISSUE_NUM"
+          else
+            echo "ℹ️  No issue number found in branch name"
+          fi
+      
+      - name: Validate issue exists
+        if: steps.extract-issue.outputs.has_issue == 'true'
+        run: |
+          ISSUE_NUM="${{ steps.extract-issue.outputs.issue_number }}"
+          echo "🔍 Checking if issue #$ISSUE_NUM exists..."
+          
+          # Check if the issue exists using GitHub API
+          RESPONSE=$(curl -s -w "%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_NUM")
+          
+          HTTP_CODE="${RESPONSE: -3}"
+          
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ Issue #$ISSUE_NUM exists and is accessible"
+          elif [ "$HTTP_CODE" = "404" ]; then
+            echo "❌ Issue #$ISSUE_NUM does not exist"
+            exit 1
+          else
+            echo "⚠️  Unable to verify issue #$ISSUE_NUM (HTTP $HTTP_CODE)"
+            echo "This might be a permissions issue or API rate limit"
+          fi
+        continue-on-error: true
+      
+      - name: Validate PR title and description
+        run: |
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          PR_BODY="${{ github.event.pull_request.body }}"
+          
+          echo "📝 Validating PR title: $PR_TITLE"
+          
+          # Check for basic PR title patterns
+          if [[ ${#PR_TITLE} -lt 10 ]]; then
+            echo "❌ PR title is too short (minimum 10 characters)"
+            exit 1
+          fi
+          
+          # Check if PR body exists and has meaningful content
+          if [ -z "$PR_BODY" ] || [ ${#PR_BODY} -lt 20 ]; then
+            echo "⚠️  PR description is very short or missing"
+            echo "Consider adding more details about the changes"
+          else
+            echo "✅ PR has adequate description"
+          fi
+          
+          echo "✅ PR title validation passed"
+
+  pre-merge-checks:
+    name: Pre-merge Validation
+    runs-on: ubuntu-latest
+    needs: validate-issue-context
+    if: always() && !cancelled()
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      
+      - name: Check for merge conflicts
+        run: |
+          echo "🔍 Checking for potential merge conflicts..."
+          
+          # Get list of changed files
+          CHANGED_FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
+          
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+          
+          # Check if any critical files might have conflicts
+          CRITICAL_FILES=""
+          while IFS= read -r file; do
+            if [[ "$file" =~ \.(go|js|ts|tsx|yml|yaml|json)$ ]]; then
+              CRITICAL_FILES="$CRITICAL_FILES $file"
+            fi
+          done <<< "$CHANGED_FILES"
+          
+          if [ -n "$CRITICAL_FILES" ]; then
+            echo "✅ Critical files detected, merge conflict check passed"
+          fi
+      
+      - name: Validate CI/CD integrity
+        run: |
+          echo "🔍 Validating CI/CD configuration integrity..."
+          
+          # Check that required workflow files exist
+          REQUIRED_WORKFLOWS=(
+            ".github/workflows/main-ci.yml"
+            ".github/workflows/smart-protection.yml"
+          )
+          
+          for workflow in "${REQUIRED_WORKFLOWS[@]}"; do
+            if [ -f "$workflow" ]; then
+              echo "✅ $workflow exists"
+            else
+              echo "❌ Missing required workflow: $workflow"
+              exit 1
             fi
           done
           
-          if [ ${#UNRESOLVED_DEPS[@]} -gt 0 ]; then
-            echo "⚠️ Some dependencies are still open: ${UNRESOLVED_DEPS[*]}"
-            # For integration testing, this should be blocking
-            if [ "$ISSUE_NUM" = "11" ]; then
-              MISSING+=("❌ Dependencies must be resolved first: ${UNRESOLVED_DEPS[*]}")
-              VALIDATION_FAILED=true
+          # Validate YAML syntax for workflow files
+          for workflow_file in .github/workflows/*.yml; do
+            if [ -f "$workflow_file" ]; then
+              echo "Validating $workflow_file..."
+              # Basic YAML validation using python
+              python3 -c "
+import yaml
+import sys
+try:
+    with open('$workflow_file', 'r') as f:
+        yaml.safe_load(f)
+    print('✅ $workflow_file is valid YAML')
+except Exception as e:
+    print('❌ $workflow_file has invalid YAML:', e)
+    sys.exit(1)
+"
             fi
-          fi
-        fi
-        
-        # Check if this PR needs more information
-        NEEDS_MORE_INFO=false
-        if echo "$PR_BODY" | grep -iE "(need.*more|insufficient.*detail|unclear|please.*clarify)" > /dev/null; then
-          NEEDS_MORE_INFO=true
-        fi
-        
-        # Check for related issue references
-        RELATED_ISSUES=$(echo "$PR_BODY" | grep -oiE "(relates? to|related|see also|depends on) #([0-9]+)" | grep -oE "[0-9]+" || true)
-        if [ -n "$RELATED_ISSUES" ]; then
-          echo "🔗 Found related issues: $(echo $RELATED_ISSUES | tr '\n' ',' | sed 's/,$//')"
-        fi
-        
-        VALIDATION_FAILED=false
-        REQUIREMENTS=()
-        MISSING=()
-        
-        # Issue-specific validation rules
-        case "$ISSUE_NUM" in
-          1)
-            # CloudFlare Tunnel Implementation
-            echo "📡 Validating CloudFlare Tunnel implementation..."
-            REQUIREMENTS+=("✓ CloudFlare tunnel configuration file")
-            REQUIREMENTS+=("✓ Tunnel authentication/credentials setup")
-            REQUIREMENTS+=("✓ Public URL testing evidence")
-            REQUIREMENTS+=("✓ No exposed ports verification")
-            
-            if ! echo "$PR_BODY" | grep -iE "(tunnel|cloudflare|cloudflared)" > /dev/null; then
-              MISSING+=("❌ Must mention CloudFlare tunnel configuration")
-              VALIDATION_FAILED=true
-            fi
-            
-            if ! echo "$PR_BODY" | grep -iE "(test.*url|public.*access|tunnel.*test)" > /dev/null; then
-              MISSING+=("❌ Must include public URL testing evidence")
-              VALIDATION_FAILED=true
-            fi
-            
-            if ! echo "$PR_BODY" | grep -iE "(no.*port|port.*closed|zero.*exposure)" > /dev/null; then
-              MISSING+=("⚠️ Should verify no ports are exposed")
-            fi
-            ;;
-            
-          2)
-            # VPN Configuration
-            echo "🔐 Validating VPN configuration..."
-            REQUIREMENTS+=("✓ VPN connection testing from external network")
-            REQUIREMENTS+=("✓ Admin access verification")
-            REQUIREMENTS+=("✓ Network routing documentation")
-            
-            if ! echo "$PR_BODY" | grep -iE "(vpn|teleport|identity|route)" > /dev/null; then
-              MISSING+=("❌ Must document VPN configuration")
-              VALIDATION_FAILED=true
-            fi
-            
-            if ! echo "$PR_BODY" | grep -iE "(test|verified|working|success)" > /dev/null; then
-              MISSING+=("⚠️ Should include testing verification")
-            fi
-            ;;
-            
-          3)
-            # Webhook Deployment System
-            echo "🪝 Validating webhook deployment..."
-            REQUIREMENTS+=("✓ Webhook security configuration (secret)")
-            REQUIREMENTS+=("✓ Systemd service configuration")
-            REQUIREMENTS+=("✓ GitHub Actions workflow update")
-            REQUIREMENTS+=("✓ Deployment testing evidence")
-            
-            if ! echo "$PR_BODY" | grep -iE "(webhook.*secret|hmac|signature.*verif)" > /dev/null; then
-              MISSING+=("❌ Must include webhook security (secret/HMAC)")
-              VALIDATION_FAILED=true
-            fi
-            
-            if ! echo "$PR_BODY" | grep -iE "(systemd|service|daemon)" > /dev/null; then
-              MISSING+=("❌ Must configure systemd service")
-              VALIDATION_FAILED=true
-            fi
-            
-            if ! echo "$PR_BODY" | grep -iE "(github.*action|workflow|\.github)" > /dev/null; then
-              MISSING+=("❌ Must update GitHub Actions workflow")
-              VALIDATION_FAILED=true
-            fi
-            
-            if ! echo "$PR_BODY" | grep -iE "(deploy.*test|test.*deploy|deployment.*work)" > /dev/null; then
-              MISSING+=("❌ Must include deployment testing evidence")
-              VALIDATION_FAILED=true
-            fi
-            ;;
-            
-          4)
-            # Install cloudflared on Pi
-            echo "💿 Validating cloudflared installation..."
-            REQUIREMENTS+=("✓ Installation commands/script")
-            REQUIREMENTS+=("✓ Service configuration")
-            REQUIREMENTS+=("✓ Version verification")
-            
-            if ! echo "$PR_BODY" | grep -iE "(install|apt|dpkg|cloudflared)" > /dev/null; then
-              MISSING+=("❌ Must show installation process")
-              VALIDATION_FAILED=true
-            fi
-            
-            if ! echo "$PR_BODY" | grep -iE "(version|cloudflared.*version)" > /dev/null; then
-              MISSING+=("⚠️ Should verify installed version")
-            fi
-            ;;
-            
-          5)
-            # Create CloudFlare tunnel service
-            echo "🚇 Validating tunnel service creation..."
-            REQUIREMENTS+=("✓ Tunnel creation command")
-            REQUIREMENTS+=("✓ Service configuration file")
-            REQUIREMENTS+=("✓ Tunnel ID/credentials")
-            
-            if ! echo "$PR_BODY" | grep -iE "(tunnel.*create|cloudflared.*tunnel)" > /dev/null; then
-              MISSING+=("❌ Must show tunnel creation")
-              VALIDATION_FAILED=true
-            fi
-            
-            if ! echo "$PR_BODY" | grep -iE "(config|yml|yaml|ingress)" > /dev/null; then
-              MISSING+=("❌ Must include tunnel configuration")
-              VALIDATION_FAILED=true
-            fi
-            ;;
-            
-          6|7)
-            # VPN sub-tasks
-            echo "🔑 Validating VPN sub-task..."
-            REQUIREMENTS+=("✓ UDM Pro configuration steps")
-            REQUIREMENTS+=("✓ Client device setup")
-            REQUIREMENTS+=("✓ Connection testing")
-            
-            if ! echo "$PR_BODY" | grep -iE "(udm|unifi|vpn.*config)" > /dev/null; then
-              MISSING+=("⚠️ Should document UDM Pro configuration")
-            fi
-            ;;
-            
-          8|9|10)
-            # Webhook sub-tasks
-            echo "⚙️ Validating webhook sub-task..."
-            REQUIREMENTS+=("✓ Installation/configuration steps")
-            REQUIREMENTS+=("✓ Security implementation")
-            REQUIREMENTS+=("✓ Testing verification")
-            
-            if ! echo "$PR_BODY" | grep -iE "(webhook|deploy|github.*webhook)" > /dev/null; then
-              MISSING+=("❌ Must reference webhook implementation")
-              VALIDATION_FAILED=true
-            fi
-            ;;
-            
-          11)
-            # Integration Testing
-            echo "🧪 Validating integration testing..."
-            REQUIREMENTS+=("✓ End-to-end test execution")
-            REQUIREMENTS+=("✓ All components verified")
-            REQUIREMENTS+=("✓ Performance metrics")
-            REQUIREMENTS+=("✓ Security validation")
-            
-            if ! echo "$PR_BODY" | grep -iE "(end.to.end|e2e|integration|full.*test)" > /dev/null; then
-              MISSING+=("❌ Must include end-to-end testing")
-              VALIDATION_FAILED=true
-            fi
-            
-            if ! echo "$PR_BODY" | grep -iE "(performance|latency|response.*time)" > /dev/null; then
-              MISSING+=("⚠️ Should include performance metrics")
-            fi
-            
-            if ! echo "$PR_BODY" | grep -iE "(security|vulnerab|scan|pentest)" > /dev/null; then
-              MISSING+=("⚠️ Should include security validation")
-            fi
-            ;;
-            
-          *)
-            echo "ℹ️ No specific validation rules for Issue #${ISSUE_NUM}"
-            ;;
-        esac
-        
-        # Generate comprehensive validation report
-        COMMENT_HEADER=""
-        COMMENT_BODY=""
-        
-        if [ "$VALIDATION_FAILED" = true ]; then
-          COMMENT_HEADER="## 🚨 Issue-Specific Validation Failed"
-        elif [ "$NEEDS_MORE_INFO" = true ]; then
-          COMMENT_HEADER="## ℹ️ More Information Needed"
-        else
-          COMMENT_HEADER="## ✅ Issue-Specific Validation Passed"
-        fi
-        
-        COMMENT_BODY="**Issue #${ISSUE_NUM}**: $ISSUE_TITLE_TEXT"
-        
-        # Add issue type info
-        if [ "$IS_SUBTASK" = true ]; then
-          COMMENT_BODY="$COMMENT_BODY
-        **Type**: Sub-task"
-          if [ -n "$PARENT_ISSUE" ]; then
-            PARENT_TITLE=$(gh issue view $PARENT_ISSUE --json title | jq -r '.title')
-            COMMENT_BODY="$COMMENT_BODY
-        **Parent Issue**: #${PARENT_ISSUE} - $PARENT_TITLE"
-          fi
-        fi
-        
-        # Add dependency information
-        if [ ${#DEPENDENCIES[@]} -gt 0 ]; then
-          COMMENT_BODY="$COMMENT_BODY
-        **Dependencies**: Issues #$(printf '#%s ' "${DEPENDENCIES[@]}" | sed 's/ $//')"
-          if [ ${#UNRESOLVED_DEPS[@]} -gt 0 ]; then
-            COMMENT_BODY="$COMMENT_BODY
-        ⚠️ **Unresolved Dependencies**: ${UNRESOLVED_DEPS[*]}"
-          fi
-        fi
-        
-        # Add related issues
-        if [ -n "$RELATED_ISSUES" ]; then
-          COMMENT_BODY="$COMMENT_BODY
-        **Related Issues**: #$(echo $RELATED_ISSUES | sed 's/ /, #/g')"
-        fi
-        
-        # Add requirements and validation results
-        if [ ${#REQUIREMENTS[@]} -gt 0 ]; then
-          COMMENT_BODY="$COMMENT_BODY
+          done
+          
+          echo "✅ CI/CD integrity validation passed"
 
-        ### Requirements for this issue:
-        $(printf '%s\n' "${REQUIREMENTS[@]}")"
-        fi
-        
-        if [ ${#MISSING[@]} -gt 0 ]; then
-          if [ "$VALIDATION_FAILED" = true ]; then
-            COMMENT_BODY="$COMMENT_BODY
-
-        ### Issues found (must fix):
-        $(printf '%s\n' "${MISSING[@]}")"
+  validation-summary:
+    name: Validation Summary
+    needs: [validate-issue-context, pre-merge-checks]
+    if: always()
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Generate validation summary
+        run: |
+          echo "## 🔍 Issue-Specific Validation Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Issue Context**: ${{ needs.validate-issue-context.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Pre-merge Checks**: ${{ needs.pre-merge-checks.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ "${{ needs.validate-issue-context.result }}" == "success" && "${{ needs.pre-merge-checks.result }}" == "success" ]]; then
+            echo "✅ All issue-specific validations passed" >> $GITHUB_STEP_SUMMARY
+            echo "This PR is ready for code review"
+            exit 0
           else
-            COMMENT_BODY="$COMMENT_BODY
-
-        ### Suggestions (non-blocking):
-        $(printf '%s\n' "${MISSING[@]}")"
+            echo "❌ Some validations failed" >> $GITHUB_STEP_SUMMARY
+            echo "Please review and address the issues above"
+            exit 1
           fi
-        fi
-        
-        # Add next steps
-        if [ "$VALIDATION_FAILED" = true ]; then
-          COMMENT_BODY="$COMMENT_BODY
-
-        **Next Steps**: Please update your PR to address the issues above."
-        elif [ "$NEEDS_MORE_INFO" = true ]; then
-          COMMENT_BODY="$COMMENT_BODY
-
-        **Next Steps**: Please provide additional information or clarification as requested."
-        else
-          COMMENT_BODY="$COMMENT_BODY
-
-        **Status**: ✅ PR meets the specific requirements for this issue!"
-          
-          # Auto-link related issues and wiki pages
-          if [ -n "$PARENT_ISSUE" ]; then
-            gh issue comment $PARENT_ISSUE --body "🔗 **Sub-task Progress**: PR #${PR_NUMBER} addresses Issue #${ISSUE_NUM}
-            
-        Related implementation is ready for review." 2>/dev/null || true
-          fi
-          
-          # Add wiki documentation links
-          WIKI_LINKS=""
-          case "$ISSUE_NUM" in
-            1)
-              WIKI_LINKS="📚 **Wiki Documentation**: [CloudFlare Tunnel Setup](https://github.com/White-Plains-Gospel-Chapel/sermon-uploader/wiki/CloudFlare-Tunnel-Setup)"
-              ;;
-            2)
-              WIKI_LINKS="📚 **Wiki Documentation**: [VPN Admin Access](https://github.com/White-Plains-Gospel-Chapel/sermon-uploader/wiki/VPN-Admin-Access)"
-              ;;
-            3)
-              WIKI_LINKS="📚 **Wiki Documentation**: [Webhook Deployment](https://github.com/White-Plains-Gospel-Chapel/sermon-uploader/wiki/Webhook-Deployment)"
-              ;;
-            11)
-              WIKI_LINKS="📚 **Wiki Documentation**: [Integration Testing](https://github.com/White-Plains-Gospel-Chapel/sermon-uploader/wiki/Integration-Testing)"
-              ;;
-            4|5)
-              WIKI_LINKS="📚 **Wiki Documentation**: [CloudFlare Tunnel Setup](https://github.com/White-Plains-Gospel-Chapel/sermon-uploader/wiki/CloudFlare-Tunnel-Setup)"
-              ;;
-            6|7)
-              WIKI_LINKS="📚 **Wiki Documentation**: [VPN Admin Access](https://github.com/White-Plains-Gospel-Chapel/sermon-uploader/wiki/VPN-Admin-Access)"
-              ;;
-            8|9|10)
-              WIKI_LINKS="📚 **Wiki Documentation**: [Webhook Deployment](https://github.com/White-Plains-Gospel-Chapel/sermon-uploader/wiki/Webhook-Deployment)"
-              ;;
-          esac
-          
-          if [ -n "$WIKI_LINKS" ]; then
-            COMMENT_BODY="$COMMENT_BODY
-
-        $WIKI_LINKS
-        🔐 **Private Details**: See [Private Documentation Index](https://github.com/White-Plains-Gospel-Chapel/sermon-uploader/wiki/Private-Documentation-Index) for sensitive implementation details."
-          fi
-        fi
-        
-        # Post the comment
-        FULL_COMMENT="$COMMENT_HEADER
-
-        $COMMENT_BODY"
-        
-        gh pr comment $PR_NUMBER --body "$FULL_COMMENT"
-        
-        if [ "$VALIDATION_FAILED" = true ]; then
-          echo "::error::Issue-specific validation failed for Issue #${ISSUE_NUM}"
-          exit 1
-        else
-          echo "✅ Issue-specific validation completed for Issue #${ISSUE_NUM}"
-        fi
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,231 @@
+name: Auto-Close Issue
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [master, main]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number to close'
+        required: true
+        type: string
+      pr_number:
+        description: 'PR number that resolved the issue'
+        required: true  
+        type: string
+
+jobs:
+  auto-close-issue:
+    name: Auto-Close Related Issue
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Extract issue number from PR
+        id: extract-issue
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            ISSUE_NUM="${{ github.event.inputs.issue_number }}"
+            PR_NUM="${{ github.event.inputs.pr_number }}"
+          else
+            PR_TITLE="${{ github.event.pull_request.title }}"
+            PR_BODY="${{ github.event.pull_request.body }}"
+            BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
+            PR_NUM="${{ github.event.pull_request.number }}"
+            
+            # Try multiple patterns to extract issue number
+            ISSUE_NUM=""
+            
+            # Pattern 1: From branch name (issue-123-description)
+            if [[ "$BRANCH_NAME" =~ issue-([0-9]+) ]]; then
+              ISSUE_NUM="${BASH_REMATCH[1]}"
+              echo "Found issue number in branch name: $ISSUE_NUM"
+            
+            # Pattern 2: From PR title (Fix #123: description)
+            elif [[ "$PR_TITLE" =~ [Ff]ix[es]*[[:space:]]+#([0-9]+) ]]; then
+              ISSUE_NUM="${BASH_REMATCH[1]}"
+              echo "Found issue number in PR title: $ISSUE_NUM"
+            
+            # Pattern 3: From PR body (Fixes #123, Closes #123, Resolves #123)
+            elif [[ "$PR_BODY" =~ ([Ff]ixes|[Cc]loses|[Rr]esolves)[[:space:]]+#([0-9]+) ]]; then
+              ISSUE_NUM="${BASH_REMATCH[2]}"
+              echo "Found issue number in PR body: $ISSUE_NUM"
+            
+            # Pattern 4: Any #123 reference in title or body
+            elif [[ "$PR_TITLE $PR_BODY" =~ #([0-9]+) ]]; then
+              ISSUE_NUM="${BASH_REMATCH[1]}"
+              echo "Found issue reference: $ISSUE_NUM"
+            fi
+          fi
+          
+          echo "issue_number=$ISSUE_NUM" >> $GITHUB_OUTPUT
+          echo "pr_number=$PR_NUM" >> $GITHUB_OUTPUT
+          echo "has_issue=$([ -n "$ISSUE_NUM" ] && echo true || echo false)" >> $GITHUB_OUTPUT
+          
+          if [ -n "$ISSUE_NUM" ]; then
+            echo "✅ Issue number identified: #$ISSUE_NUM"
+          else
+            echo "ℹ️  No issue number found - no automatic closing will occur"
+          fi
+      
+      - name: Check if issue exists and is open
+        if: steps.extract-issue.outputs.has_issue == 'true'
+        id: check-issue
+        run: |
+          ISSUE_NUM="${{ steps.extract-issue.outputs.issue_number }}"
+          
+          echo "🔍 Checking issue #$ISSUE_NUM..."
+          
+          # Get issue information
+          RESPONSE=$(curl -s \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_NUM")
+          
+          if echo "$RESPONSE" | jq -e '.id' > /dev/null 2>&1; then
+            ISSUE_STATE=$(echo "$RESPONSE" | jq -r '.state')
+            ISSUE_TITLE=$(echo "$RESPONSE" | jq -r '.title')
+            
+            echo "Issue #$ISSUE_NUM exists: '$ISSUE_TITLE'"
+            echo "Current state: $ISSUE_STATE"
+            
+            if [ "$ISSUE_STATE" = "open" ]; then
+              echo "can_close=true" >> $GITHUB_OUTPUT
+              echo "issue_title=$ISSUE_TITLE" >> $GITHUB_OUTPUT
+              echo "✅ Issue is open and can be closed"
+            else
+              echo "can_close=false" >> $GITHUB_OUTPUT
+              echo "ℹ️  Issue is already $ISSUE_STATE"
+            fi
+          else
+            echo "can_close=false" >> $GITHUB_OUTPUT
+            echo "❌ Issue #$ISSUE_NUM does not exist or is not accessible"
+          fi
+      
+      - name: Close the issue
+        if: steps.check-issue.outputs.can_close == 'true'
+        run: |
+          ISSUE_NUM="${{ steps.extract-issue.outputs.issue_number }}"
+          PR_NUM="${{ steps.extract-issue.outputs.pr_number }}"
+          ISSUE_TITLE="${{ steps.check-issue.outputs.issue_title }}"
+          
+          echo "🎯 Closing issue #$ISSUE_NUM..."
+          
+          # Create closing comment
+          CLOSE_COMMENT="🎉 This issue has been resolved by PR #$PR_NUM
+          
+**Resolution Summary:**
+- **PR**: #$PR_NUM - ${{ github.event.pull_request.title || 'Manual closure' }}
+- **Author**: @${{ github.event.pull_request.user.login || github.actor }}
+- **Merged**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+
+Thank you for reporting this issue! The fix has been merged to the main branch."
+          
+          # Add closing comment
+          curl -s -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_NUM/comments" \
+            -d "$(jq -n --arg body "$CLOSE_COMMENT" '{"body": $body}')"
+          
+          # Close the issue
+          CLOSE_RESPONSE=$(curl -s -X PATCH \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_NUM" \
+            -d '{"state": "closed"}')
+          
+          if echo "$CLOSE_RESPONSE" | jq -e '.state == "closed"' > /dev/null 2>&1; then
+            echo "✅ Successfully closed issue #$ISSUE_NUM: '$ISSUE_TITLE'"
+          else
+            echo "❌ Failed to close issue #$ISSUE_NUM"
+            echo "Response: $CLOSE_RESPONSE"
+            exit 1
+          fi
+      
+      - name: Add PR comment about issue closure
+        if: steps.check-issue.outputs.can_close == 'true' && github.event_name != 'workflow_dispatch'
+        run: |
+          ISSUE_NUM="${{ steps.extract-issue.outputs.issue_number }}"
+          PR_NUM="${{ steps.extract-issue.outputs.pr_number }}"
+          
+          PR_COMMENT="🔗 **Automatic Issue Closure**
+          
+This PR has automatically closed issue #$ISSUE_NUM.
+          
+The issue was identified and closed based on the PR title, branch name, or description that referenced the issue number."
+          
+          curl -s -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUM/comments" \
+            -d "$(jq -n --arg body "$PR_COMMENT" '{"body": $body}')"
+          
+          echo "✅ Added closure notification to PR #$PR_NUM"
+
+  cleanup-related-branches:
+    name: Cleanup Related Branches
+    needs: auto-close-issue
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.merged == true
+    
+    steps:
+      - name: Delete merged branch
+        run: |
+          BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
+          
+          echo "🧹 Cleaning up merged branch: $BRANCH_NAME"
+          
+          # Only delete if it's not a protected branch
+          PROTECTED_BRANCHES=("master" "main" "develop" "staging")
+          
+          for protected in "${PROTECTED_BRANCHES[@]}"; do
+            if [ "$BRANCH_NAME" = "$protected" ]; then
+              echo "⚠️  Skipping deletion of protected branch: $BRANCH_NAME"
+              exit 0
+            fi
+          done
+          
+          # Delete the remote branch
+          DELETE_RESPONSE=$(curl -s -X DELETE \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/git/refs/heads/$BRANCH_NAME")
+          
+          if [ -z "$DELETE_RESPONSE" ]; then
+            echo "✅ Successfully deleted branch: $BRANCH_NAME"
+          else
+            echo "ℹ️  Branch cleanup response: $DELETE_RESPONSE"
+            echo "Branch may have been already deleted or protected"
+          fi
+        continue-on-error: true
+
+  auto-close-summary:
+    name: Auto-Close Summary
+    needs: [auto-close-issue, cleanup-related-branches]
+    if: always()
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Generate summary
+        run: |
+          echo "## 🎯 Auto-Close Issue Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ needs.auto-close-issue.result }}" == "success" ]; then
+            echo "✅ **Auto-close workflow completed successfully**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- Issue identification and closure: ✅" >> $GITHUB_STEP_SUMMARY
+            echo "- Branch cleanup: ${{ needs.cleanup-related-branches.result }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "ℹ️  **Auto-close workflow completed**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "No issues were automatically closed. This could be because:" >> $GITHUB_STEP_SUMMARY
+            echo "- No issue number was found in the PR title, branch, or description" >> $GITHUB_STEP_SUMMARY
+            echo "- The referenced issue was already closed" >> $GITHUB_STEP_SUMMARY
+            echo "- The issue does not exist" >> $GITHUB_STEP_SUMMARY
+          fi

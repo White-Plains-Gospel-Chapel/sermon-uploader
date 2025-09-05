@@ -1,0 +1,306 @@
+name: PR Validation
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [master, main]
+  workflow_dispatch:
+
+# Cancel in-progress runs for the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: '1.23'
+  NODE_VERSION: '20'
+
+jobs:
+  pr-metadata-check:
+    name: PR Metadata Validation
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    outputs:
+      is-valid: ${{ steps.validate.outputs.is-valid }}
+      change-type: ${{ steps.analyze.outputs.change-type }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Validate PR metadata
+        id: validate
+        run: |
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          PR_AUTHOR="${{ github.event.pull_request.user.login }}"
+          PR_BASE="${{ github.event.pull_request.base.ref }}"
+          PR_HEAD="${{ github.event.pull_request.head.ref }}"
+          
+          echo "🔍 Validating PR metadata..."
+          echo "Title: $PR_TITLE"
+          echo "Author: $PR_AUTHOR"
+          echo "Base: $PR_BASE"
+          echo "Head: $PR_HEAD"
+          
+          IS_VALID=true
+          
+          # Validate PR title format and content
+          if [ ${#PR_TITLE} -lt 8 ]; then
+            echo "❌ PR title too short (minimum 8 characters)"
+            IS_VALID=false
+          fi
+          
+          # Check for conventional commit format (optional but recommended)
+          if [[ "$PR_TITLE" =~ ^(feat|fix|docs|style|refactor|test|chore|ci|perf|build)(\(.+\))?: ]]; then
+            echo "✅ PR title follows conventional commit format"
+          else
+            echo "ℹ️  PR title doesn't follow conventional commit format (recommended)"
+          fi
+          
+          # Validate branch name
+          if [[ "$PR_HEAD" =~ ^(feature|fix|hotfix|docs|chore)/ ]]; then
+            echo "✅ Branch name follows naming convention"
+          else
+            echo "⚠️  Branch name doesn't follow convention (feature/fix/hotfix/docs/chore)"
+          fi
+          
+          echo "is-valid=$IS_VALID" >> $GITHUB_OUTPUT
+          
+          if [ "$IS_VALID" = false ]; then
+            exit 1
+          fi
+      
+      - name: Analyze change type
+        id: analyze
+        run: |
+          # Get changed files between base and head
+          CHANGED_FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
+          
+          echo "📊 Analyzing changed files..."
+          
+          HAS_GO=false
+          HAS_FRONTEND=false
+          HAS_CONFIG=false
+          HAS_DOCS=false
+          HAS_WORKFLOWS=false
+          HAS_TESTS=false
+          
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            echo "  - $file"
+            
+            case "$file" in
+              *.go) HAS_GO=true ;;
+              backend/*) HAS_GO=true ;;
+              frontend/*) HAS_FRONTEND=true ;;
+              *.js|*.ts|*.tsx|*.jsx) HAS_FRONTEND=true ;;
+              *_test.go|*_test.js|*_test.ts|test/*|tests/*) HAS_TESTS=true ;;
+              *.yml|*.yaml|docker-compose*|Dockerfile*) HAS_CONFIG=true ;;
+              .github/workflows/*) HAS_WORKFLOWS=true ;;
+              *.md|docs/*) HAS_DOCS=true ;;
+            esac
+          done <<< "$CHANGED_FILES"
+          
+          # Determine change type
+          CHANGE_TYPE="mixed"
+          if [ "$HAS_GO" = true ] && [ "$HAS_FRONTEND" = false ]; then
+            CHANGE_TYPE="backend"
+          elif [ "$HAS_FRONTEND" = true ] && [ "$HAS_GO" = false ]; then
+            CHANGE_TYPE="frontend"
+          elif [ "$HAS_WORKFLOWS" = true ]; then
+            CHANGE_TYPE="ci-cd"
+          elif [ "$HAS_DOCS" = true ] && [ "$HAS_GO" = false ] && [ "$HAS_FRONTEND" = false ]; then
+            CHANGE_TYPE="documentation"
+          elif [ "$HAS_CONFIG" = true ] && [ "$HAS_GO" = false ] && [ "$HAS_FRONTEND" = false ]; then
+            CHANGE_TYPE="configuration"
+          fi
+          
+          echo "change-type=$CHANGE_TYPE" >> $GITHUB_OUTPUT
+          echo "Change type detected: $CHANGE_TYPE"
+
+  code-quality-check:
+    name: Code Quality Validation
+    needs: pr-metadata-check
+    runs-on: ubuntu-latest
+    if: needs.pr-metadata-check.outputs.is-valid == 'true'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Setup Go (if needed)
+        if: contains(needs.pr-metadata-check.outputs.change-type, 'backend') || contains(needs.pr-metadata-check.outputs.change-type, 'mixed')
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: backend/go.sum
+      
+      - name: Setup Node.js (if needed)
+        if: contains(needs.pr-metadata-check.outputs.change-type, 'frontend') || contains(needs.pr-metadata-check.outputs.change-type, 'mixed')
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      
+      - name: Run Go quality checks
+        if: contains(needs.pr-metadata-check.outputs.change-type, 'backend') || contains(needs.pr-metadata-check.outputs.change-type, 'mixed')
+        working-directory: backend
+        run: |
+          echo "🔍 Running Go quality checks..."
+          
+          # Check if go.mod is tidy
+          go mod tidy
+          if [[ -n $(git status --porcelain go.mod go.sum) ]]; then
+            echo "❌ go.mod or go.sum is not tidy"
+            git diff go.mod go.sum
+            exit 1
+          fi
+          
+          # Run basic compilation check
+          go build -v ./...
+          
+          echo "✅ Go quality checks passed"
+      
+      - name: Run frontend quality checks  
+        if: contains(needs.pr-metadata-check.outputs.change-type, 'frontend') || contains(needs.pr-metadata-check.outputs.change-type, 'mixed')
+        working-directory: frontend
+        run: |
+          echo "🔍 Running frontend quality checks..."
+          
+          # Install dependencies if package-lock.json exists
+          if [ -f "package-lock.json" ]; then
+            npm ci
+          elif [ -f "package.json" ]; then
+            npm install
+          fi
+          
+          # Type check if TypeScript project
+          if [ -f "tsconfig.json" ]; then
+            npx tsc --noEmit || echo "⚠️  TypeScript check had warnings"
+          fi
+          
+          # Build check
+          if npm run build; then
+            echo "✅ Frontend build successful"
+          else
+            echo "❌ Frontend build failed"
+            exit 1
+          fi
+        continue-on-error: false
+      
+      - name: Security and dependency check
+        run: |
+          echo "🔍 Running security checks..."
+          
+          # Check for known security issues in Go dependencies
+          if [ -f "backend/go.mod" ]; then
+            cd backend
+            if command -v govulncheck >/dev/null 2>&1; then
+              govulncheck ./...
+            else
+              echo "ℹ️  govulncheck not available, skipping Go vulnerability scan"
+            fi
+            cd ..
+          fi
+          
+          # Check for high-severity npm vulnerabilities
+          if [ -f "frontend/package.json" ]; then
+            cd frontend
+            if npm audit --audit-level high; then
+              echo "✅ No high-severity npm vulnerabilities found"
+            else
+              echo "⚠️  High-severity npm vulnerabilities detected"
+            fi
+            cd ..
+          fi
+        continue-on-error: true
+
+  file-validation:
+    name: File Structure Validation
+    needs: pr-metadata-check
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      
+      - name: Validate critical files exist
+        run: |
+          echo "🔍 Validating critical project files..."
+          
+          REQUIRED_FILES=(
+            "README.md"
+            "backend/go.mod"
+            ".github/workflows/main-ci.yml"
+            ".github/workflows/smart-protection.yml"
+          )
+          
+          for file in "${REQUIRED_FILES[@]}"; do
+            if [ -f "$file" ]; then
+              echo "✅ $file exists"
+            else
+              echo "❌ Missing required file: $file"
+              exit 1
+            fi
+          done
+      
+      - name: Check for prohibited files
+        run: |
+          echo "🔍 Checking for prohibited files..."
+          
+          # Check for test audio files (should not be in repo)
+          if find . -name "*.wav" -o -name "*.aac" -o -name "*.mp3" | grep -q .; then
+            echo "❌ Audio files detected in repository!"
+            echo "Audio files should not be committed to the repository"
+            find . -name "*.wav" -o -name "*.aac" -o -name "*.mp3"
+            exit 1
+          fi
+          
+          # Check for large files (>10MB)
+          if find . -type f -size +10M | grep -q .; then
+            echo "⚠️  Large files detected (>10MB):"
+            find . -type f -size +10M -exec ls -lh {} \;
+            echo "Consider using Git LFS for large files"
+          fi
+          
+          echo "✅ File validation passed"
+
+  pr-validation-summary:
+    name: PR Validation Summary
+    needs: [pr-metadata-check, code-quality-check, file-validation]
+    if: always()
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Generate validation summary
+        run: |
+          echo "## 📋 PR Validation Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Change Type**: ${{ needs.pr-metadata-check.outputs.change-type }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Validation Results:" >> $GITHUB_STEP_SUMMARY
+          echo "- **Metadata Check**: ${{ needs.pr-metadata-check.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Code Quality**: ${{ needs.code-quality-check.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **File Structure**: ${{ needs.file-validation.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Determine overall result
+          if [[ "${{ needs.pr-metadata-check.result }}" == "success" && 
+                "${{ needs.code-quality-check.result }}" == "success" && 
+                "${{ needs.file-validation.result }}" == "success" ]]; then
+            echo "✅ **Overall Status**: All validations passed" >> $GITHUB_STEP_SUMMARY
+            echo "This PR meets the quality standards and is ready for review"
+            exit 0
+          else
+            echo "❌ **Overall Status**: Some validations failed" >> $GITHUB_STEP_SUMMARY  
+            echo "Please review and address the issues above before continuing"
+            exit 1
+          fi
