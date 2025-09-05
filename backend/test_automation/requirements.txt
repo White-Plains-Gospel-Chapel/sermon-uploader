@@ -1,0 +1,53 @@
+# Python Requirements for API Upload Testing Suite
+# Install with: pip install -r requirements.txt
+
+# HTTP requests and API testing
+requests>=2.28.0
+urllib3>=1.26.0
+
+# SSH and SFTP for ridgepoint Pi file access
+paramiko>=2.12.0
+cryptography>=38.0.0
+
+# Data processing and analysis
+numpy>=1.21.0
+pandas>=1.5.0
+
+# Concurrent processing
+concurrent-futures>=3.1.1; python_version < '3.2'
+
+# Logging and configuration
+pyyaml>=6.0
+python-json-logger>=2.0.0
+
+# Statistical analysis for performance metrics
+scipy>=1.9.0
+matplotlib>=3.5.0  # Optional, for generating charts
+
+# System monitoring (optional, for enhanced metrics)
+psutil>=5.9.0
+
+# Progress bars and CLI utilities
+tqdm>=4.64.0
+click>=8.0.0
+
+# Testing utilities
+pytest>=7.1.0
+pytest-asyncio>=0.21.0
+
+# Date/time handling
+python-dateutil>=2.8.0
+
+# JSON schema validation
+jsonschema>=4.17.0
+
+# Memory profiling (optional, for debugging)
+memory-profiler>=0.60.0
+
+# Async HTTP client (optional, for async tests)
+aiohttp>=3.8.0
+aiofiles>=22.1.0
+
+# Development and debugging
+ipython>=8.0.0
+pdb++>=0.10.0

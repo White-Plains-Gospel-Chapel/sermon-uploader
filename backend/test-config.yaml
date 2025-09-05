@@ -1,0 +1,222 @@
+# Test Configuration File
+# Defines test suites and their parameters
+
+# Test Environment Settings
+environment:
+  default: "local"
+  options:
+    local:
+      env_file: ".env.test"
+      minio_endpoint: "localhost:9000"
+      use_container: false
+      timeout: "300s"
+    ci:
+      env_file: ".env.ci"
+      minio_endpoint: "localhost:9000"
+      use_container: true
+      timeout: "600s"
+    performance:
+      env_file: ".env.test"
+      minio_endpoint: "localhost:9000"
+      use_container: false
+      timeout: "1800s"
+
+# Test Suites Configuration
+test_suites:
+  
+  # Fast integration tests (< 30 seconds)
+  fast:
+    description: "Quick integration tests for pre-commit"
+    timeout: "30s"
+    parallel: true
+    tests:
+      - "TestEndToEndUploadOnly"
+      - "TestHealthMinIOConnectivity"
+      - "TestHealthMemoryUsage"
+      - "TestHealthDiskSpace"
+    file_sizes:
+      - name: "small"
+        size_mb: 1
+        count: 3
+    concurrent_uploads: 3
+    skip_large_files: true
+    
+  # Full integration tests
+  integration:
+    description: "Complete integration test suite"
+    timeout: "600s"
+    parallel: true
+    tests:
+      - "TestIntegrationSuite"
+    file_sizes:
+      - name: "small"
+        size_mb: 1
+        count: 5
+      - name: "medium"
+        size_mb: 10
+        count: 3
+      - name: "large"
+        size_mb: 50
+        count: 2
+    concurrent_uploads: 10
+    skip_large_files: false
+    
+  # Performance tests
+  performance:
+    description: "Performance and stress testing"
+    timeout: "1800s"
+    parallel: false
+    tests:
+      - "TestPerformanceUploadThroughput"
+      - "TestPerformanceConcurrentUploads"
+      - "TestPerformanceConnectionPool"
+      - "TestPerformanceRetryMechanism"
+    file_sizes:
+      - name: "small"
+        size_mb: 1
+        count: 10
+      - name: "medium"
+        size_mb: 10
+        count: 5
+      - name: "large"
+        size_mb: 50
+        count: 3
+      - name: "huge"
+        size_mb: 500
+        count: 2
+      - name: "xlarge"
+        size_mb: 1024
+        count: 1
+    concurrent_uploads: 20
+    skip_large_files: false
+    
+  # Health checks
+  health:
+    description: "System health and monitoring tests"
+    timeout: "120s"
+    parallel: true
+    tests:
+      - "TestHealthMinIOConnectivity"
+      - "TestHealthMemoryUsage"
+      - "TestHealthDiskSpace"
+      - "TestHealthNetworkConnectivity"
+      - "TestHealthCPUTemperature"
+      - "TestSystemHealthOverall"
+    skip_large_files: true
+
+# File Generation Specifications
+file_specs:
+  test_files:
+    small:
+      - filename: "test_small_mono.wav"
+        duration: 5
+        sample_rate: 22050
+        bit_depth: 16
+        channels: 1
+        pattern: "predictable"
+      - filename: "test_small_stereo.wav"
+        duration: 5
+        sample_rate: 44100
+        bit_depth: 16
+        channels: 2
+        pattern: "predictable"
+        
+    medium:
+      - filename: "test_medium_cd.wav"
+        duration: 30
+        sample_rate: 44100
+        bit_depth: 16
+        channels: 2
+        pattern: "predictable"
+      - filename: "test_medium_hd.wav"
+        duration: 30
+        sample_rate: 48000
+        bit_depth: 24
+        channels: 2
+        pattern: "predictable"
+        
+    large:
+      - filename: "test_large_cd.wav"
+        duration: 300
+        sample_rate: 44100
+        bit_depth: 16
+        channels: 2
+        pattern: "predictable"
+      - filename: "test_large_hd.wav"
+        duration: 120
+        sample_rate: 96000
+        bit_depth: 24
+        channels: 2
+        pattern: "predictable"
+        
+    stress:
+      - filename: "test_stress_1.wav"
+        duration: 10
+        sample_rate: 44100
+        bit_depth: 16
+        channels: 2
+        pattern: "predictable"
+      - filename: "test_stress_2.wav"
+        duration: 10
+        sample_rate: 44100
+        bit_depth: 16
+        channels: 2
+        pattern: "random"
+      - filename: "test_stress_3.wav"
+        duration: 10
+        sample_rate: 48000
+        bit_depth: 24
+        channels: 2
+        pattern: "sine"
+
+# Performance Thresholds
+performance_thresholds:
+  # Minimum acceptable performance metrics
+  throughput:
+    min_mbps: 5.0
+    target_mbps: 15.0
+    
+  success_rate:
+    min_percent: 80.0
+    target_percent: 95.0
+    
+  latency:
+    max_p95_seconds: 60.0
+    max_p99_seconds: 120.0
+    
+  memory:
+    max_usage_mb: 1024
+    pi_limit_mb: 800
+    
+  cpu:
+    max_usage_percent: 95.0
+    
+  concurrency:
+    min_concurrent: 5
+    max_concurrent: 20
+
+# Retry and Timeout Settings
+retry_settings:
+  max_retries: 3
+  initial_delay: "1s"
+  max_delay: "30s"
+  backoff_factor: 2.0
+  
+timeout_settings:
+  connection: "10s"
+  upload_small: "30s"
+  upload_medium: "300s"
+  upload_large: "1800s"
+  health_check: "10s"
+
+# Monitoring Settings
+monitoring:
+  resource_sampling_interval: "1s"
+  metrics_collection: true
+  detailed_logging: false
+  
+# Cleanup Settings
+cleanup:
+  auto_cleanup: true
+  preserve_on_failure: false
+  cleanup_timeout: "60s"
