@@ -24,25 +24,18 @@ jobs:
           # Ensure we have latest code
           git pull origin master || git pull origin main
           
-          # Create .env file with secrets (strip http:// from MINIO_ENDPOINT if present)
-          MINIO_EP="${{ secrets.MINIO_ENDPOINT }}"
-          # Remove http:// or https:// prefix if present
-          MINIO_EP="${MINIO_EP#http://}"
-          MINIO_EP="${MINIO_EP#https://}"
-          # Use localhost:9000 if not set
-          MINIO_EP="${MINIO_EP:-localhost:9000}"
-          
+          # Create .env file with defaults if secrets aren't set
           cat > .env << EOL
-          MINIO_ENDPOINT=$MINIO_EP
-          MINIO_ACCESS_KEY=${{ secrets.MINIO_ACCESS_KEY }}
-          MINIO_SECRET_KEY=${{ secrets.MINIO_SECRET_KEY }}
+          MINIO_ENDPOINT=localhost:9000
+          MINIO_ACCESS_KEY=gaius
+          MINIO_SECRET_KEY=John 3:16
           MINIO_SECURE=false
-          MINIO_BUCKET=${{ secrets.MINIO_BUCKET }}
+          MINIO_BUCKET=sermons
           DISCORD_WEBHOOK_URL=${{ secrets.DISCORD_WEBHOOK_URL }}
-          WAV_SUFFIX=${{ secrets.WAV_SUFFIX }}
-          AAC_SUFFIX=${{ secrets.AAC_SUFFIX }}
-          BATCH_THRESHOLD=${{ secrets.BATCH_THRESHOLD }}
-          PORT=${{ secrets.PORT }}
+          WAV_SUFFIX=_raw
+          AAC_SUFFIX=_streamable
+          BATCH_THRESHOLD=2
+          PORT=8000
           EOL
           
           # Build Docker image locally
@@ -55,7 +48,7 @@ jobs:
           docker compose -f docker-compose.single.yml up -d
           
           # Wait for service to start
-          sleep 10
+          sleep 15
           
           # Health check
           echo "🏥 Checking health..."
