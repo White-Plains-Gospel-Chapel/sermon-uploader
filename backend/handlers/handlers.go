@@ -6,6 +6,8 @@ import (
 	"io"
 	"log"
 	"mime/multipart"
+	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -24,11 +26,17 @@ type Handlers struct {
 }
 
 type StatusResponse struct {
-	MinIOConnected bool   `json:"minio_connected"`
-	BucketExists   bool   `json:"bucket_exists"`
-	FileCount      int    `json:"file_count"`
-	Endpoint       string `json:"endpoint"`
-	BucketName     string `json:"bucket_name"`
+	MinIOConnected bool      `json:"minio_connected"`
+	BucketExists   bool      `json:"bucket_exists"`
+	FileCount      int       `json:"file_count"`
+	Endpoint       string    `json:"endpoint"`
+	BucketName     string    `json:"bucket_name"`
+	Build          BuildInfo `json:"build,omitempty"`
+}
+
+type BuildInfo struct {
+	Commit    string `json:"commit,omitempty"`
+	GoVersion string `json:"go_version,omitempty"`
 }
 
 func New(fileService *services.FileService, minioService *services.MinIOService, discordService *services.DiscordService, wsHub *services.WebSocketHub, cfg *config.Config) *Handlers {
@@ -42,10 +50,22 @@ func New(fileService *services.FileService, minioService *services.MinIOService,
 }
 
 func (h *Handlers) HealthCheck(c *fiber.Ctx) error {
+	commit := os.Getenv("IMAGE_REVISION")
+	if commit == "" {
+		commit = os.Getenv("BUILD_REVISION")
+	}
+	if commit == "" {
+		commit = os.Getenv("GIT_COMMIT")
+	}
+
 	return c.JSON(fiber.Map{
 		"status":    "healthy",
 		"timestamp": fiber.Map{"now": "ok"},
 		"service":   "sermon-uploader-go",
+		"build": fiber.Map{
+			"commit":     commit,
+			"go_version": runtime.Version(),
+		},
 	})
 }
 
@@ -72,6 +92,16 @@ func (h *Handlers) GetStatus(c *fiber.Ctx) error {
 		FileCount:      fileCount,
 		Endpoint:       h.config.MinIOEndpoint,
 		BucketName:     h.config.MinioBucket,
+		Build: BuildInfo{Commit: func() string {
+			v := os.Getenv("IMAGE_REVISION")
+			if v == "" {
+				v = os.Getenv("BUILD_REVISION")
+			}
+			if v == "" {
+				v = os.Getenv("GIT_COMMIT")
+			}
+			return v
+		}(), GoVersion: runtime.Version()},
 	})
 }
 
@@ -352,6 +382,14 @@ func (h *Handlers) GetDashboard(c *fiber.Ctx) error {
 	}
 
 	// Build response
+	commit := os.Getenv("IMAGE_REVISION")
+	if commit == "" {
+		commit = os.Getenv("BUILD_REVISION")
+	}
+	if commit == "" {
+		commit = os.Getenv("GIT_COMMIT")
+	}
+
 	dashboard := map[string]interface{}{
 		"status": map[string]interface{}{
 			"minio_connected": minioConnected,
@@ -371,6 +409,10 @@ func (h *Handlers) GetDashboard(c *fiber.Ctx) error {
 			"generated_at":      time.Now().Format(time.RFC3339),
 			"metadata_included": includeMetadata,
 			"file_limit":        limit,
+		},
+		"build": map[string]interface{}{
+			"commit":     commit,
+			"go_version": runtime.Version(),
 		},
 	}
 

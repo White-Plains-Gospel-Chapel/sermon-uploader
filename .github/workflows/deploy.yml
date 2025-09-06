@@ -110,34 +110,42 @@ jobs:
         env:
           BUILDX_NO_DEFAULT_ATTESTATIONS: 1
 
-  # Deploy to Raspberry Pi with automatic secret injection
+  # Deploy to Raspberry Pi - runs directly on Pi
   deploy-to-pi:
     needs: build-and-push
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     
     steps:
-      - name: Create deployment script with secrets
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          clean: true
+          fetch-depth: 0
+      
+      - name: Deploy to Pi
         run: |
-          cat > deploy-script.sh << 'EOF'
-          #!/bin/bash
-          set -e
+          echo "🚀 Starting deployment on self-hosted runner..."
+          echo "Current directory: $(pwd)"
+          echo "Current commit: $(git rev-parse HEAD)"
           
-          echo "🚀 Starting deployment..."
+          # Pull latest to ensure we have everything
+          git pull origin master || git pull origin main
           
-          # Navigate to project directory
-          cd /opt/sermon-uploader || { echo "❌ Project directory not found"; exit 1; }
+          # Use the correct docker-compose file (single.yml for Pi)
+          COMPOSE_FILE="docker-compose.single.yml"
+          if [ ! -f "$COMPOSE_FILE" ]; then
+            echo "Warning: $COMPOSE_FILE not found, using docker-compose.yml"
+            COMPOSE_FILE="docker-compose.yml"
+          fi
           
-          # Pull latest code
-          git pull origin main
-          
-          # Create/update .env file with secrets from GitHub
+          # Create/update .env file with proper MinIO endpoint for single container
           cat > .env << EOL
-          # MinIO Configuration
-          MINIO_ENDPOINT=${{ secrets.MINIO_ENDPOINT }}
+          # MinIO Configuration (localhost since it's in same container)
+          MINIO_ENDPOINT=localhost:9000
           MINIO_ACCESS_KEY=${{ secrets.MINIO_ACCESS_KEY }}
           MINIO_SECRET_KEY=${{ secrets.MINIO_SECRET_KEY }}
-          MINIO_SECURE=${{ secrets.MINIO_SECURE }}
+          MINIO_SECURE=false
           MINIO_BUCKET=${{ secrets.MINIO_BUCKET }}
           
           # Discord Configuration  
@@ -157,13 +165,17 @@ jobs:
           # Set proper permissions
           chmod 600 .env
           
-          # Pull latest images
-          echo "📦 Pulling latest container images..."
-          docker compose -f docker-compose.prod.yml pull
+          # Build the image locally on Pi (no registry needed)
+          echo "🏗️ Building Docker image locally..."
+          docker build -t sermon-uploader:latest .
           
-          # Update only the sermon-uploader service (preserve MinIO data)
-          echo "🔄 Updating sermon uploader service..."
-          docker compose -f docker-compose.prod.yml up -d --force-recreate sermon-uploader
+          # Stop old container
+          echo "🛑 Stopping old container..."
+          docker compose -f "$COMPOSE_FILE" down || true
+          
+          # Start new container with locally built image
+          echo "🚀 Starting new container..."
+          docker compose -f "$COMPOSE_FILE" up -d
           
           # Wait for service to be ready
           echo "⏳ Waiting for service to start..."
@@ -176,7 +188,7 @@ jobs:
               break
             elif [ $i -eq 5 ]; then
               echo "❌ Deployment failed - Health check failed after 5 attempts"
-              docker compose -f docker-compose.prod.yml logs sermon-uploader
+              docker compose -f "$COMPOSE_FILE" logs --tail=50
               exit 1
             else
               echo "⏳ Health check failed, retrying in 10s... (attempt $i)"
@@ -184,319 +196,44 @@ jobs:
             fi
           done
           
-          # Clean up old images and containers
+          # Clean up old images
           echo "🧹 Cleaning up old images..."
-          docker image prune -af --filter="until=24h"
-          docker container prune -f --filter="until=24h"
+          docker image prune -af --filter="until=24h" || true
           
           # Show final status
           echo "📊 Deployment complete!"
-          docker compose -f docker-compose.prod.yml ps
-          
-          # Test upload endpoint
-          echo "🧪 Testing upload endpoint..."
-          curl -f http://localhost:8000/api/health | jq '.' || echo "Health check response not JSON"
+          docker compose -f "$COMPOSE_FILE" ps
           
           echo "🎉 All systems operational!"
-          EOF
-          
-          chmod +x deploy-script.sh
 
-      - name: Comprehensive Pi connectivity diagnosis
+      - name: Discord deployment notification
+        if: always()
         run: |
-          PI_HOST="${{ secrets.PI_HOST }}"
-          PI_PORT="${{ secrets.PI_PORT || 22 }}"
-          PI_USER="${{ secrets.PI_USER }}"
-          
-          echo "🔍 Comprehensive Pi connectivity diagnosis..."
-          echo "Target: $PI_USER@$PI_HOST:$PI_PORT"
-          echo ""
-          
-          # Test 1: Basic network connectivity
-          echo "📡 Test 1: Network connectivity (ping)"
-          if ping -c 3 -W 3 "$PI_HOST" >/dev/null 2>&1; then
-            echo "✅ Pi responds to ping - network connectivity OK"
+          if [ "${{ job.status }}" == "success" ]; then
+            MESSAGE="✅ Successfully deployed latest master to Pi"
+            COLOR="3066993"
           else
-            echo "❌ Pi does not respond to ping - network issue or Pi offline"
-            echo "💡 This could mean:"
-            echo "   - Pi is powered off"
-            echo "   - Network connection issue"
-            echo "   - Pi IP address changed"
-            echo "   - Firewall blocking ICMP"
+            MESSAGE="❌ Deployment to Pi failed"
+            COLOR="15158332"
           fi
           
-          echo ""
-          
-          # Test 2: SSH port accessibility  
-          echo "🔌 Test 2: SSH port accessibility"
-          if timeout 10 nc -z "$PI_HOST" "$PI_PORT" >/dev/null 2>&1; then
-            echo "✅ SSH port $PI_PORT is open and accessible"
-          else
-            echo "❌ SSH port $PI_PORT is not accessible"
-            echo "💡 This could mean:"
-            echo "   - SSH service is not running on Pi"
-            echo "   - Port $PI_PORT is blocked by firewall"
-            echo "   - Pi is using a different SSH port"
-            echo "   - Pi is completely offline"
-            
-            # Try common SSH ports
-            echo ""
-            echo "🔍 Checking common SSH ports..."
-            for port in 22 2222 22000; do
-              if timeout 5 nc -z "$PI_HOST" "$port" >/dev/null 2>&1; then
-                echo "✅ Found SSH service on port $port"
-              else
-                echo "❌ No SSH service on port $port"
-              fi
-            done
-            exit 1
+          WEBHOOK_URL="${{ secrets.DISCORD_WEBHOOK_URL }}"
+          if [ -n "$WEBHOOK_URL" ]; then
+            curl -X POST "$WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"embeds\": [{
+                  \"title\": \"Deployment Status\",
+                  \"description\": \"$MESSAGE\",
+                  \"color\": $COLOR,
+                  \"fields\": [
+                    {\"name\": \"Commit\", \"value\": \"$(git rev-parse --short HEAD)\", \"inline\": true},
+                    {\"name\": \"Branch\", \"value\": \"${{ github.ref_name }}\", \"inline\": true}
+                  ]
+                }]
+              }" || echo "Discord notification failed"
           fi
-          
-          echo ""
-          
-          # Test 3: SSH handshake and auth method
-          echo "🔑 Test 3: SSH handshake and authentication"
-          SSH_OUTPUT=$(timeout 15 ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o PasswordAuthentication=no -v "$PI_USER@$PI_HOST" -p "$PI_PORT" exit 2>&1 || true)
-          
-          if echo "$SSH_OUTPUT" | grep -q "Connection established"; then
-            echo "✅ SSH connection established successfully"
-            
-            if echo "$SSH_OUTPUT" | grep -q "Authentication succeeded"; then
-              echo "✅ SSH key authentication successful"
-              echo "🎉 All connectivity tests passed!"
-            elif echo "$SSH_OUTPUT" | grep -q "Permission denied"; then
-              echo "❌ SSH key authentication failed"
-              echo "💡 This means:"
-              echo "   - SSH key is incorrect or not authorized"
-              echo "   - Key format might be wrong"
-              echo "   - Pi user account issues"
-              echo "   - SSH key not added to Pi's authorized_keys"
-              exit 1
-            elif echo "$SSH_OUTPUT" | grep -q "No supported authentication methods"; then
-              echo "❌ No supported authentication methods"
-              echo "💡 SSH key authentication not available"
-              exit 1
-            else
-              echo "⚠️ Unknown authentication result"
-              echo "SSH output (last 10 lines):"
-              echo "$SSH_OUTPUT" | tail -10
-            fi
-          elif echo "$SSH_OUTPUT" | grep -q "Connection refused"; then
-            echo "❌ SSH connection refused"
-            echo "💡 SSH service might be stopped or misconfigured"
-            exit 1
-          elif echo "$SSH_OUTPUT" | grep -q "No route to host"; then
-            echo "❌ No route to host"
-            echo "💡 Network routing issue or Pi unreachable"
-            exit 1
-          elif echo "$SSH_OUTPUT" | grep -q "Connection timed out"; then
-            echo "❌ SSH connection timed out"
-            echo "💡 Network connectivity issue or very slow connection"
-            exit 1
-          else
-            echo "❌ Unknown SSH connection issue"
-            echo "SSH output (last 15 lines):"
-            echo "$SSH_OUTPUT" | tail -15
-            exit 1
-          fi
-          
-          echo ""
-          echo "✅ All diagnostics passed - proceeding with deployment"
 
-      - name: Deploy to Pi via SSH
-        uses: appleboy/ssh-action@v1.0.0
-        with:
-          host: ${{ secrets.PI_HOST }}
-          username: ${{ secrets.PI_USER }}
-          key: ${{ secrets.PI_SSH_KEY }}
-          port: ${{ secrets.PI_PORT || 22 }}
-          script_stop: true
-          timeout: 15m
-          command_timeout: 15m
-          script: |
-            # Execute the deployment script
-            bash -c "$(cat << 'DEPLOY_SCRIPT_END'
-            #!/bin/bash
-            set -e
-            
-            echo "🚀 Starting deployment..."
-            
-            # Navigate to project directory
-            cd /opt/sermon-uploader || { echo "❌ Project directory not found"; exit 1; }
-            
-            # Pull latest code
-            git pull origin main
-            
-            # Check if we need to migrate from separate containers to single container
-            MIGRATION_NEEDED=false
-            if docker compose -f docker-compose.prod.yml ps minio 2>/dev/null | grep -q "Up"; then
-              echo "📦 Existing MinIO container detected - migration needed"
-              MIGRATION_NEEDED=true
-            fi
-            
-            # Create/update .env file with secrets from GitHub
-            cat > .env << 'EOL'
-            # MinIO Configuration
-            MINIO_ENDPOINT=${{ secrets.MINIO_ENDPOINT }}
-            MINIO_ACCESS_KEY=${{ secrets.MINIO_ACCESS_KEY }}
-            MINIO_SECRET_KEY=${{ secrets.MINIO_SECRET_KEY }}
-            MINIO_SECURE=${{ secrets.MINIO_SECURE }}
-            MINIO_BUCKET=${{ secrets.MINIO_BUCKET }}
-            
-            # Discord Configuration  
-            DISCORD_WEBHOOK_URL=${{ secrets.DISCORD_WEBHOOK_URL }}
-            
-            # Application Configuration
-            WAV_SUFFIX=${{ secrets.WAV_SUFFIX || '_raw' }}
-            AAC_SUFFIX=${{ secrets.AAC_SUFFIX || '_streamable' }}
-            BATCH_THRESHOLD=${{ secrets.BATCH_THRESHOLD || '2' }}
-            PORT=${{ secrets.PORT || '8000' }}
-            
-            # Generated at deployment
-            DEPLOYMENT_ID=${{ github.sha }}
-            DEPLOYMENT_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-            EOL
-            
-            # Set proper permissions
-            chmod 600 .env
-            
-            # Pull latest images
-            echo "📦 Pulling latest container images..."
-            
-            if [ "$MIGRATION_NEEDED" = "true" ]; then
-              echo "🔄 Starting migration to single container..."
-              
-              # Pull new single container image
-              docker compose -f docker-compose.single.yml pull
-              
-              # Start new single container (will fail migration API call, but that's expected)
-              echo "🚀 Starting new single container architecture..."
-              docker compose -f docker-compose.single.yml up -d || {
-                echo "⚠️ Initial startup failed, this is expected for migration"
-              }
-              
-              # Wait for new container to be ready for migration
-              sleep 30
-              
-              # Perform migration via API
-              echo "📡 Calling migration API..."
-              curl -X POST http://localhost:${{ secrets.PORT || '8000' }}/api/migrate/minio \
-                -F "source_endpoint=http://localhost:9000" \
-                -F "source_access_key=${{ secrets.MINIO_ACCESS_KEY }}" \
-                -F "source_secret_key=${{ secrets.MINIO_SECRET_KEY }}" \
-                -F "source_bucket=${{ secrets.MINIO_BUCKET || 'sermons' }}" \
-                --max-time 300 || {
-                echo "❌ Migration API call failed"
-                echo "📝 Checking migration logs..."
-                docker compose -f docker-compose.single.yml logs sermon-uploader --tail=20
-                exit 1
-              }
-              
-              echo "✅ Migration completed successfully"
-              
-              # Stop old separate containers
-              echo "🛑 Stopping old separate containers..."
-              docker compose -f docker-compose.prod.yml down || true
-              
-            else
-              echo "🔄 Standard update (single container already in use)..."
-              docker compose -f docker-compose.single.yml pull
-              docker compose -f docker-compose.single.yml up -d --force-recreate
-            fi
-            
-            # Wait for MinIO to be ready (now inside single container)
-            echo "⏳ Waiting for MinIO to start..."
-            for i in {1..12}; do
-              if curl -f http://localhost:9000/minio/health/live >/dev/null 2>&1; then
-                echo "✅ MinIO is ready (attempt $i)"
-                break
-              elif [ $i -eq 12 ]; then
-                echo "❌ MinIO failed to start after 2 minutes"
-                docker compose -f docker-compose.single.yml logs sermon-uploader --tail=30
-                exit 1
-              else
-                echo "⏳ MinIO not ready, retrying in 10s... (attempt $i)"
-                sleep 10
-              fi
-            done
-            
-            # Wait for main service to be ready
-            echo "⏳ Waiting for sermon uploader to start..."
-            sleep 30
-            
-            # Enhanced health check with better diagnostics
-            PORT_TO_USE=8000  # Use actual port value instead of variable
-            echo "🔍 Starting enhanced health check on port $PORT_TO_USE..."
-            
-            # Show initial container startup logs
-            echo "📝 Container startup logs:"
-            docker compose -f docker-compose.single.yml logs sermon-uploader --tail=50
-            
-            for i in {1..10}; do
-              echo "🔍 Attempting health check (attempt $i/10) on port $PORT_TO_USE..."
-              
-              # Check if container is running
-              if ! docker compose -f docker-compose.single.yml ps sermon-uploader | grep -q "Up"; then
-                echo "❌ Container is not running!"
-                echo "📊 Container status:"
-                docker compose -f docker-compose.single.yml ps
-                echo "📝 Recent logs:"
-                docker compose -f docker-compose.single.yml logs sermon-uploader --tail=50
-                exit 1
-              fi
-              
-              # Check what ports are actually exposed
-              echo "🔍 Checking exposed ports:"
-              docker compose -f docker-compose.single.yml ps sermon-uploader
-              
-              # Test different health check approaches
-              if curl -f http://localhost:$PORT_TO_USE/api/health >/dev/null 2>&1; then
-                echo "✅ Deployment successful - Health check passed (attempt $i)"
-                curl -s http://localhost:$PORT_TO_USE/api/health | head -3 || echo "Health endpoint accessible"
-                break
-              elif [ $i -eq 10 ]; then
-                echo "❌ Deployment failed - Health check failed after 10 attempts"
-                echo ""
-                echo "📊 Final diagnostics:"
-                echo "--- Container Status ---"
-                docker compose -f docker-compose.single.yml ps sermon-uploader
-                echo ""
-                echo "--- Port Bindings ---"
-                docker port $(docker compose -f docker-compose.single.yml ps -q sermon-uploader) || echo "No port bindings found"
-                echo ""
-                echo "--- Recent Logs (last 50 lines) ---"
-                docker compose -f docker-compose.single.yml logs sermon-uploader --tail=50
-                echo ""
-                echo "--- Network Connectivity Test ---"
-                echo "Testing localhost:$PORT_TO_USE..."
-                curl -v --connect-timeout 5 http://localhost:$PORT_TO_USE/api/health || echo "Connection failed"
-                echo ""
-                echo "Testing 127.0.0.1:$PORT_TO_USE..."
-                curl -v --connect-timeout 5 http://127.0.0.1:$PORT_TO_USE/api/health || echo "Connection failed"
-                echo ""
-                echo "--- Process Check ---"
-                docker compose -f docker-compose.single.yml exec -T sermon-uploader ps aux || echo "Could not check processes"
-                exit 1
-              else
-                echo "⏳ Health check failed, retrying in 20s... (attempt $i)"
-                echo "📝 Current logs:"
-                docker compose -f docker-compose.single.yml logs sermon-uploader --tail=10
-                sleep 20
-              fi
-            done
-            
-            # Clean up old images and containers
-            echo "🧹 Cleaning up old images..."
-            docker image prune -af --filter="until=24h" || true
-            docker container prune -f --filter="until=24h" || true
-            
-            # Show final status
-            echo "📊 Deployment complete!"
-            docker compose -f docker-compose.single.yml ps
-            
-            echo "🎉 All systems operational!"
-            DEPLOY_SCRIPT_END
-            )"
 
   # Notify deployment status
   notify:
