@@ -24,9 +24,16 @@ jobs:
           # Ensure we have latest code
           git pull origin master || git pull origin main
           
-          # Create .env file with secrets
+          # Create .env file with secrets (strip http:// from MINIO_ENDPOINT if present)
+          MINIO_EP="${{ secrets.MINIO_ENDPOINT }}"
+          # Remove http:// or https:// prefix if present
+          MINIO_EP="${MINIO_EP#http://}"
+          MINIO_EP="${MINIO_EP#https://}"
+          # Use localhost:9000 if not set
+          MINIO_EP="${MINIO_EP:-localhost:9000}"
+          
           cat > .env << EOL
-          MINIO_ENDPOINT=localhost:9000
+          MINIO_ENDPOINT=$MINIO_EP
           MINIO_ACCESS_KEY=${{ secrets.MINIO_ACCESS_KEY }}
           MINIO_SECRET_KEY=${{ secrets.MINIO_SECRET_KEY }}
           MINIO_SECURE=false
