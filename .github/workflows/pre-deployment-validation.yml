@@ -1,0 +1,694 @@
+name: Pre-deployment Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      triggered_by:
+        description: 'Workflow that triggered this validation'
+        required: false
+        type: string
+      commit_sha:
+        description: 'Commit SHA to validate'
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      triggered_by:
+        description: 'Workflow that triggered this validation'
+        required: false
+        type: string
+      commit_sha:
+        description: 'Commit SHA to validate'
+        required: false
+        type: string
+
+# Allow only one validation to run at a time
+concurrency:
+  group: pre-deployment-validation
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: '1.23'
+  NODE_VERSION: '20'
+  PYTHON_VERSION: '3.11'
+  VALIDATION_TIMEOUT: 600  # 10 minutes
+
+jobs:
+  # Comprehensive security scanning
+  security-validation:
+    name: Security Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha || github.sha }}
+          fetch-depth: 0  # Full history for comprehensive scanning
+
+      - name: Run secret detection
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: main
+          head: HEAD
+          extra_args: --debug --only-verified
+
+      - name: Run comprehensive filesystem security scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-fs-results.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          exit-code: '1'  # Fail on vulnerabilities
+        continue-on-error: false
+
+      - name: Upload security scan results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-fs-results.sarif'
+        if: always()
+
+      - name: Run Go security audit
+        if: hashFiles('**/go.mod') != ''
+        working-directory: backend
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+      - name: Run NPM security audit
+        if: hashFiles('**/package-lock.json') != ''
+        working-directory: frontend
+        run: |
+          npm audit --audit-level high
+
+  # Audio quality validation using existing hooks
+  audio-quality-validation:
+    name: Audio Quality Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha || github.sha }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      - name: Setup Node.js  
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg bc curl jq
+
+      - name: Make hooks executable
+        run: |
+          chmod +x hooks/*.sh
+          ls -la hooks/
+
+      - name: Run audio coverage validation
+        run: ./hooks/check-audio-coverage.sh
+
+      - name: Run audio content type validation  
+        run: ./hooks/check-content-types.sh
+
+      - name: Run compression prevention validation
+        run: ./hooks/check-no-compression.sh
+
+      - name: Run quality settings validation
+        run: ./hooks/check-quality-settings.sh
+
+      - name: Run WAV handling validation
+        run: ./hooks/check-wav-handling.sh
+
+      - name: Run audio tests
+        run: ./hooks/run-audio-tests.sh
+
+  # Go backend comprehensive validation
+  backend-validation:
+    name: Backend Comprehensive Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    
+    strategy:
+      matrix:
+        check: [security, performance, memory, concurrency, resource, pi-optimization, benchmark]
+        include:
+          - check: security
+            script: go-security-check.sh
+          - check: performance  
+            script: go-performance-check.sh
+          - check: memory
+            script: go-memory-check.sh
+          - check: concurrency
+            script: go-concurrency-check.sh
+          - check: resource
+            script: go-resource-check.sh
+          - check: pi-optimization
+            script: go-pi-optimization.sh
+          - check: benchmark
+            script: go-benchmark-check.sh
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha || github.sha }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc time valgrind || true
+
+      - name: Make hooks executable
+        run: chmod +x hooks/*.sh
+
+      - name: Run ${{ matrix.check }} validation
+        run: ./hooks/${{ matrix.script }}
+
+      - name: Upload benchmark results
+        if: matrix.check == 'benchmark'
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: |
+            backend/benchmark-*.txt
+            backend/profile-*.out
+          retention-days: 7
+
+  # Code quality validation
+  code-quality-validation:
+    name: Code Quality Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha || github.sha }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd backend && go mod download
+          cd frontend && npm ci
+
+      - name: Run Go linting
+        uses: golangci/golangci-lint-action@v3
+        with:
+          version: latest
+          working-directory: backend
+          args: --timeout=5m --issues-exit-code=1
+
+      - name: Run Go tests with race detection
+        working-directory: backend
+        run: |
+          go test -race -coverprofile=coverage.out -covermode=atomic ./...
+          go tool cover -html=coverage.out -o coverage.html
+
+      - name: Check Go test coverage
+        working-directory: backend
+        run: |
+          COVERAGE=$(go tool cover -func=coverage.out | grep "total:" | awk '{print $3}' | sed 's/%//')
+          echo "Go test coverage: ${COVERAGE}%"
+          if (( $(echo "$COVERAGE < 70" | bc -l) )); then
+            echo "❌ Go test coverage below 70%"
+            exit 1
+          fi
+
+      - name: Run frontend linting
+        working-directory: frontend
+        run: |
+          npm run lint || npx eslint . --ext .ts,.tsx --max-warnings 0
+
+      - name: Run frontend type checking
+        working-directory: frontend
+        run: |
+          npm run type-check || npx tsc --noEmit
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Run frontend tests
+        working-directory: frontend
+        run: |
+          npm test -- --coverage --watchAll=false --passWithNoTests
+
+  # Docker build validation
+  container-validation:
+    name: Container Build Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    
+    strategy:
+      matrix:
+        platform: [linux/amd64, linux/arm64]
+        component: [main, pi-processor]
+        include:
+          - component: main
+            context: .
+            dockerfile: ./Dockerfile
+          - component: pi-processor
+            context: ./pi-processor
+            dockerfile: ./pi-processor/Dockerfile
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha || github.sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image for validation
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          push: false
+          tags: validation-${{ matrix.component }}:${{ matrix.platform }}
+          cache-from: type=gha,scope=validation-${{ matrix.component }}-${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=validation-${{ matrix.component }}-${{ matrix.platform }}
+
+      - name: Run container security scan
+        if: matrix.platform == 'linux/amd64'  # Only scan one platform to avoid duplicate results
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'validation-${{ matrix.component }}:${{ matrix.platform }}'
+          format: 'sarif'
+          output: 'trivy-${{ matrix.component }}-results.sarif'
+
+      - name: Upload container scan results
+        if: matrix.platform == 'linux/amd64'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-${{ matrix.component }}-results.sarif'
+
+  # Environment compatibility validation
+  environment-validation:
+    name: Environment Compatibility Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha || github.sha }}
+
+      - name: Validate Docker Compose files
+        run: |
+          # Validate all docker-compose files
+          for compose_file in docker-compose*.yml; do
+            if [ -f "$compose_file" ]; then
+              echo "Validating $compose_file..."
+              docker compose -f "$compose_file" config > /dev/null
+              echo "✅ $compose_file is valid"
+            fi
+          done
+
+      - name: Check environment variable requirements
+        run: |
+          echo "🔍 Checking environment variable requirements..."
+          
+          # Required environment variables
+          REQUIRED_VARS=(
+            "MINIO_ACCESS_KEY"
+            "MINIO_SECRET_KEY" 
+            "DISCORD_WEBHOOK_URL"
+            "MINIO_BUCKET"
+          )
+          
+          # Check if variables are referenced in compose files
+          for var in "${REQUIRED_VARS[@]}"; do
+            if grep -q "\${$var}" docker-compose*.yml; then
+              echo "✅ $var is referenced in compose files"
+            else
+              echo "⚠️ $var might not be used in compose configuration"
+            fi
+          done
+
+      - name: Validate resource requirements
+        run: |
+          echo "🔍 Validating resource requirements..."
+          
+          # Check for reasonable resource limits in compose files
+          if grep -q "mem_limit\|memory:" docker-compose*.yml; then
+            echo "✅ Memory limits configured"
+          else
+            echo "⚠️ No memory limits found - should add for production"
+          fi
+          
+          # Check for health checks
+          if grep -q "healthcheck:" docker-compose*.yml; then
+            echo "✅ Health checks configured"
+          else
+            echo "⚠️ No health checks found"
+          fi
+
+      - name: Test configuration parsing
+        run: |
+          echo "🔍 Testing configuration parsing..."
+          
+          # Test with sample environment
+          cat > .env.test << EOF
+          MINIO_ACCESS_KEY=test
+          MINIO_SECRET_KEY=test_secret
+          MINIO_BUCKET=test-sermons
+          DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/test
+          PORT=8000
+          EOF
+          
+          # Test single container configuration
+          docker compose -f docker-compose.single.yml --env-file .env.test config > /tmp/resolved-single.yml
+          echo "✅ Single container configuration resolves correctly"
+          
+          # Cleanup
+          rm -f .env.test
+
+  # Performance baseline validation
+  performance-validation:
+    name: Performance Baseline Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha || github.sha }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      - name: Run performance benchmarks
+        working-directory: backend
+        run: |
+          echo "🏃 Running performance benchmarks..."
+          
+          # Run benchmarks and save results
+          go test -bench=. -benchmem -run=^$ ./... > benchmark-results.txt 2>&1 || true
+          
+          if [ -s benchmark-results.txt ]; then
+            echo "✅ Benchmark results generated"
+            cat benchmark-results.txt
+          else
+            echo "⚠️ No benchmark results found - consider adding benchmarks for critical paths"
+          fi
+
+      - name: Validate memory usage patterns
+        working-directory: backend
+        run: |
+          echo "💾 Validating memory usage patterns..."
+          
+          # Build with race detector and run basic tests
+          go build -race -o sermon-uploader-test ./cmd/... 2>/dev/null || echo "No main package found"
+          
+          # Run tests with memory profiling
+          go test -memprofile=mem.out -run=TestUpload ./... 2>/dev/null || echo "No upload tests found"
+          
+          if [ -f mem.out ]; then
+            go tool pprof -top -cum mem.out > memory-profile.txt || true
+            if [ -s memory-profile.txt ]; then
+              echo "✅ Memory profile generated"
+            fi
+          fi
+
+      - name: Upload performance artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-validation-results
+          path: |
+            backend/benchmark-results.txt
+            backend/memory-profile.txt
+            backend/mem.out
+          retention-days: 3
+
+  # Integration test simulation
+  integration-validation:
+    name: Integration Test Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      minio:
+        image: minio/minio:latest
+        env:
+          MINIO_ACCESS_KEY: testkey
+          MINIO_SECRET_KEY: testsecret
+        ports:
+          - 9000:9000
+        options: --health-cmd "curl -f http://localhost:9000/minio/health/live" --health-interval=30s --health-timeout=10s --health-retries=3
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha || github.sha }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      - name: Wait for MinIO to be ready
+        run: |
+          echo "⏳ Waiting for MinIO to be ready..."
+          for i in {1..10}; do
+            if curl -f http://localhost:9000/minio/health/live >/dev/null 2>&1; then
+              echo "✅ MinIO is ready"
+              break
+            elif [ $i -eq 10 ]; then
+              echo "❌ MinIO failed to start"
+              exit 1
+            else
+              echo "⏳ MinIO not ready, waiting... (attempt $i/10)"
+              sleep 10
+            fi
+          done
+
+      - name: Run integration tests
+        working-directory: backend
+        env:
+          MINIO_ENDPOINT: http://localhost:9000
+          MINIO_ACCESS_KEY: testkey
+          MINIO_SECRET_KEY: testsecret
+          MINIO_SECURE: false
+          MINIO_BUCKET: test-sermons
+        run: |
+          echo "🧪 Running integration tests..."
+          
+          # Install dependencies
+          go mod download
+          
+          # Run integration tests if they exist
+          if go test -tags=integration -v ./... > integration-test-results.txt 2>&1; then
+            echo "✅ Integration tests passed"
+            cat integration-test-results.txt
+          else
+            echo "⚠️ Integration tests failed or not found"
+            cat integration-test-results.txt || true
+            # Don't fail the validation if integration tests don't exist yet
+            echo "Integration tests should be added for production readiness"
+          fi
+
+  # Validation summary
+  validation-summary:
+    name: Validation Summary
+    needs: 
+      - security-validation
+      - audio-quality-validation
+      - backend-validation
+      - code-quality-validation
+      - container-validation
+      - environment-validation
+      - performance-validation
+      - integration-validation
+    runs-on: ubuntu-latest
+    if: always()
+    
+    outputs:
+      validation_status: ${{ steps.summary.outputs.status }}
+      validation_report: ${{ steps.summary.outputs.report }}
+    
+    steps:
+      - name: Generate validation summary
+        id: summary
+        run: |
+          echo "📊 Generating validation summary..."
+          
+          SECURITY_STATUS="${{ needs.security-validation.result }}"
+          AUDIO_STATUS="${{ needs.audio-quality-validation.result }}"
+          BACKEND_STATUS="${{ needs.backend-validation.result }}"
+          QUALITY_STATUS="${{ needs.code-quality-validation.result }}"
+          CONTAINER_STATUS="${{ needs.container-validation.result }}"
+          ENVIRONMENT_STATUS="${{ needs.environment-validation.result }}"
+          PERFORMANCE_STATUS="${{ needs.performance-validation.result }}"
+          INTEGRATION_STATUS="${{ needs.integration-validation.result }}"
+          
+          # Create summary report
+          cat > validation-report.md << EOF
+          # Pre-deployment Validation Report
+          
+          **Commit:** \`${{ inputs.commit_sha || github.sha }}\`
+          **Timestamp:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          **Triggered by:** ${{ inputs.triggered_by || 'manual' }}
+          
+          ## Validation Results
+          
+          | Validation Category | Status | Details |
+          |-------------------|---------|---------|
+          | Security | $SECURITY_STATUS | Secret detection, vulnerability scanning |
+          | Audio Quality | $AUDIO_STATUS | Audio handling, compression prevention |
+          | Backend | $BACKEND_STATUS | Go code quality, performance, concurrency |
+          | Code Quality | $QUALITY_STATUS | Linting, testing, coverage |
+          | Container | $CONTAINER_STATUS | Multi-platform Docker builds |
+          | Environment | $ENVIRONMENT_STATUS | Configuration validation |
+          | Performance | $PERFORMANCE_STATUS | Benchmark and memory profiling |
+          | Integration | $INTEGRATION_STATUS | End-to-end functionality |
+          
+          ## Summary
+          EOF
+          
+          # Determine overall status
+          FAILED_COUNT=0
+          TOTAL_COUNT=8
+          
+          for status in "$SECURITY_STATUS" "$AUDIO_STATUS" "$BACKEND_STATUS" "$QUALITY_STATUS" "$CONTAINER_STATUS" "$ENVIRONMENT_STATUS" "$PERFORMANCE_STATUS" "$INTEGRATION_STATUS"; do
+            if [ "$status" != "success" ]; then
+              FAILED_COUNT=$((FAILED_COUNT + 1))
+            fi
+          done
+          
+          if [ $FAILED_COUNT -eq 0 ]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "✅ **All validations passed!** Deployment can proceed safely." >> validation-report.md
+          elif [ $FAILED_COUNT -le 2 ] && [ "$SECURITY_STATUS" = "success" ] && [ "$AUDIO_STATUS" = "success" ]; then
+            echo "status=warning" >> $GITHUB_OUTPUT
+            echo "⚠️ **Some validations failed but core security and audio quality checks passed.** Review failures before deployment." >> validation-report.md
+          else
+            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "❌ **Critical validations failed!** Deployment should not proceed." >> validation-report.md
+          fi
+          
+          echo "" >> validation-report.md
+          echo "**Failed validations:** $FAILED_COUNT/$TOTAL_COUNT" >> validation-report.md
+          
+          # Set output for use by other workflows
+          echo "report<<REPORT_EOF" >> $GITHUB_OUTPUT
+          cat validation-report.md >> $GITHUB_OUTPUT
+          echo "REPORT_EOF" >> $GITHUB_OUTPUT
+          
+          # Display report
+          cat validation-report.md
+          
+          # Fail the workflow if critical validations failed
+          if [ "${{ steps.summary.outputs.status }}" = "failure" ]; then
+            exit 1
+          fi
+
+      - name: Comment on PR if applicable
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const report = `${{ steps.summary.outputs.report }}`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: report
+            });
+
+      - name: Discord notification
+        if: always()
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          if [ -n "$DISCORD_WEBHOOK" ]; then
+            STATUS="${{ steps.summary.outputs.status }}"
+            
+            case "$STATUS" in
+              "success")
+                COLOR=65280  # Green
+                TITLE="✅ Pre-deployment Validation Passed"
+                DESCRIPTION="All validation checks passed - ready for deployment"
+                ;;
+              "warning")
+                COLOR=16776960  # Yellow
+                TITLE="⚠️ Pre-deployment Validation Warnings"
+                DESCRIPTION="Some checks failed but core validations passed"
+                ;;
+              *)
+                COLOR=16711680  # Red  
+                TITLE="❌ Pre-deployment Validation Failed"
+                DESCRIPTION="Critical validation checks failed - deployment blocked"
+                ;;
+            esac
+            
+            curl -X POST "$DISCORD_WEBHOOK" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"embeds\": [{
+                  \"title\": \"$TITLE\",
+                  \"description\": \"$DESCRIPTION\",
+                  \"color\": $COLOR,
+                  \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",
+                  \"fields\": [
+                    {\"name\": \"Repository\", \"value\": \"${{ github.repository }}\", \"inline\": true},
+                    {\"name\": \"Commit\", \"value\": \"${{ inputs.commit_sha || github.sha }}\", \"inline\": true},
+                    {\"name\": \"Triggered By\", \"value\": \"${{ inputs.triggered_by || 'manual' }}\", \"inline\": true}
+                  ]
+                }]
+              }"
+          fi

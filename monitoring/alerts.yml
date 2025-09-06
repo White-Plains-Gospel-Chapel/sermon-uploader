@@ -1,0 +1,185 @@
+# Prometheus alerting rules for Sermon Uploader
+# These rules define when alerts should be triggered and sent to Discord
+
+groups:
+  - name: sermon-uploader-critical
+    rules:
+      # Service availability alerts
+      - alert: ServiceDown
+        expr: up{job="sermon-uploader"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: sermon-uploader
+        annotations:
+          summary: "Sermon Uploader service is down"
+          description: "The sermon uploader service has been down for more than 1 minute."
+          runbook_url: "https://github.com/your-org/sermon-uploader/wiki/Runbook#service-down"
+
+      - alert: MinIODown
+        expr: up{job="minio"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: minio
+        annotations:
+          summary: "MinIO service is down"
+          description: "MinIO storage service has been unreachable for more than 2 minutes."
+          runbook_url: "https://github.com/your-org/sermon-uploader/wiki/Runbook#minio-down"
+
+      # High error rate alerts
+      - alert: HighErrorRate
+        expr: |
+          (
+            rate(sermon_uploader_errors_total[5m]) /
+            rate(sermon_uploader_requests_total[5m])
+          ) > 0.1
+        for: 3m
+        labels:
+          severity: critical
+          service: sermon-uploader
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value | humanizePercentage }} over the last 5 minutes."
+          runbook_url: "https://github.com/your-org/sermon-uploader/wiki/Runbook#high-error-rate"
+
+      # Response time alerts
+      - alert: HighResponseTime
+        expr: histogram_quantile(0.95, rate(sermon_uploader_request_duration_seconds_bucket[5m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+          service: sermon-uploader
+        annotations:
+          summary: "High response time detected"
+          description: "95th percentile response time is {{ $value }}s over the last 5 minutes."
+          runbook_url: "https://github.com/your-org/sermon-uploader/wiki/Runbook#high-response-time"
+
+  - name: sermon-uploader-resource
+    rules:
+      # Memory usage alerts
+      - alert: HighMemoryUsage
+        expr: |
+          (
+            node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes
+          ) / node_memory_MemTotal_bytes > 0.9
+        for: 2m
+        labels:
+          severity: warning
+          service: system
+        annotations:
+          summary: "High memory usage"
+          description: "Memory usage is above 90% for more than 2 minutes."
+          runbook_url: "https://github.com/your-org/sermon-uploader/wiki/Runbook#high-memory"
+
+      # CPU usage alerts
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance)(irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 95
+        for: 3m
+        labels:
+          severity: warning
+          service: system
+        annotations:
+          summary: "High CPU usage"
+          description: "CPU usage is above 95% for more than 3 minutes."
+          runbook_url: "https://github.com/your-org/sermon-uploader/wiki/Runbook#high-cpu"
+
+      # Disk usage alerts
+      - alert: HighDiskUsage
+        expr: |
+          (
+            node_filesystem_size_bytes{mountpoint="/"} - 
+            node_filesystem_free_bytes{mountpoint="/"}
+          ) / node_filesystem_size_bytes{mountpoint="/"} > 0.9
+        for: 1m
+        labels:
+          severity: critical
+          service: system
+        annotations:
+          summary: "High disk usage"
+          description: "Disk usage is above 90% on root filesystem."
+          runbook_url: "https://github.com/your-org/sermon-uploader/wiki/Runbook#high-disk"
+
+      # Container restart alerts
+      - alert: ContainerRestarting
+        expr: rate(container_start_time_seconds[10m]) > 0.1
+        for: 1m
+        labels:
+          severity: warning
+          service: docker
+        annotations:
+          summary: "Container restarting frequently"
+          description: "Container {{ $labels.name }} is restarting frequently."
+          runbook_url: "https://github.com/your-org/sermon-uploader/wiki/Runbook#container-restarts"
+
+  - name: sermon-uploader-business
+    rules:
+      # Upload failure alerts
+      - alert: UploadFailures
+        expr: rate(sermon_uploader_upload_failures_total[10m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+          service: sermon-uploader
+        annotations:
+          summary: "Upload failures detected"
+          description: "Upload failure rate is {{ $value }} per second over the last 10 minutes."
+          runbook_url: "https://github.com/your-org/sermon-uploader/wiki/Runbook#upload-failures"
+
+      # MinIO connection failures
+      - alert: MinIOConnectionFailures
+        expr: rate(sermon_uploader_minio_connection_errors_total[5m]) > 0.05
+        for: 2m
+        labels:
+          severity: warning
+          service: minio
+        annotations:
+          summary: "MinIO connection issues"
+          description: "MinIO connection error rate is {{ $value }} per second."
+          runbook_url: "https://github.com/your-org/sermon-uploader/wiki/Runbook#minio-connection"
+
+      # Discord notification failures
+      - alert: DiscordNotificationFailures
+        expr: rate(sermon_uploader_discord_notification_errors_total[10m]) > 0.1
+        for: 5m
+        labels:
+          severity: info
+          service: discord
+        annotations:
+          summary: "Discord notification failures"
+          description: "Discord notifications are failing at {{ $value }} per second."
+          runbook_url: "https://github.com/your-org/sermon-uploader/wiki/Runbook#discord-notifications"
+
+  - name: sermon-uploader-predictive
+    rules:
+      # Disk space prediction (will fill in 4 hours)
+      - alert: DiskSpaceRunningOut
+        expr: |
+          predict_linear(
+            node_filesystem_free_bytes{mountpoint="/"}[1h], 4 * 3600
+          ) < 0
+        for: 10m
+        labels:
+          severity: warning
+          service: system
+        annotations:
+          summary: "Disk space running out"
+          description: "Disk space is predicted to run out within 4 hours."
+          runbook_url: "https://github.com/your-org/sermon-uploader/wiki/Runbook#disk-space-prediction"
+
+      # Memory leak detection
+      - alert: PossibleMemoryLeak
+        expr: |
+          (
+            increase(container_memory_usage_bytes{name=~".*sermon-uploader.*"}[1h]) > 0
+          ) and (
+            rate(container_memory_usage_bytes{name=~".*sermon-uploader.*"}[1h]) > 10485760
+          )
+        for: 30m
+        labels:
+          severity: warning
+          service: sermon-uploader
+        annotations:
+          summary: "Possible memory leak detected"
+          description: "Container memory usage has been increasing steadily for 30 minutes."
+          runbook_url: "https://github.com/your-org/sermon-uploader/wiki/Runbook#memory-leak"

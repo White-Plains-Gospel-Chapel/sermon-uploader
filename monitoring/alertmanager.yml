@@ -1,0 +1,133 @@
+# Alertmanager configuration for Sermon Uploader
+# Handles alert routing and notifications to Discord and other channels
+
+global:
+  # Default SMTP settings (if email is needed)
+  smtp_smarthost: 'localhost:587'
+  smtp_from: 'alerts@sermon-uploader.local'
+  # Discord webhook URL will be set via environment variable
+  discord_api_url: 'https://discord.com/api/webhooks'
+
+# Routing configuration
+route:
+  group_by: ['alertname', 'cluster', 'service']
+  group_wait: 10s
+  group_interval: 10s
+  repeat_interval: 1h
+  receiver: 'web.hook'
+  routes:
+    # Critical alerts - immediate notification
+    - match:
+        severity: critical
+      receiver: 'discord-critical'
+      group_wait: 5s
+      repeat_interval: 15m
+      
+    # Warning alerts - grouped notifications
+    - match:
+        severity: warning
+      receiver: 'discord-warning'
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 2h
+      
+    # Info alerts - daily digest
+    - match:
+        severity: info
+      receiver: 'discord-info'
+      group_wait: 10m
+      group_interval: 1h
+      repeat_interval: 24h
+
+# Inhibition rules - prevent spam
+inhibit_rules:
+  # Inhibit warning alerts when critical alert is firing
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'cluster', 'service']
+    
+  # Inhibit info alerts when warning or critical is firing
+  - source_match_re:
+      severity: 'critical|warning'
+    target_match:
+      severity: 'info'
+    equal: ['alertname', 'cluster', 'service']
+
+# Notification receivers
+receivers:
+  # Default webhook (fallback)
+  - name: 'web.hook'
+    webhook_configs:
+      - url: 'http://localhost:5001/alert'
+
+  # Critical alerts to Discord
+  - name: 'discord-critical'
+    webhook_configs:
+      - url: '{{ .ExternalURL }}/api/webhooks/discord/critical'
+        send_resolved: true
+        title: '🚨 CRITICAL ALERT - Sermon Uploader'
+        text: |
+          {{ range .Alerts }}
+          **{{ .Annotations.summary }}**
+          
+          **Service:** {{ .Labels.service }}
+          **Severity:** {{ .Labels.severity }}
+          **Description:** {{ .Annotations.description }}
+          
+          **Time:** {{ .StartsAt.Format "2006-01-02 15:04:05 MST" }}
+          {{ if .Annotations.runbook_url }}**Runbook:** {{ .Annotations.runbook_url }}{{ end }}
+          
+          ---
+          {{ end }}
+
+  # Warning alerts to Discord
+  - name: 'discord-warning'
+    webhook_configs:
+      - url: '{{ .ExternalURL }}/api/webhooks/discord/warning'
+        send_resolved: true
+        title: '⚠️ Warning - Sermon Uploader'
+        text: |
+          {{ range .Alerts }}
+          **{{ .Annotations.summary }}**
+          
+          Service: {{ .Labels.service }} | Severity: {{ .Labels.severity }}
+          {{ .Annotations.description }}
+          {{ if .Annotations.runbook_url }}
+          [Runbook]({{ .Annotations.runbook_url }}){{ end }}
+          {{ end }}
+
+  # Info alerts to Discord
+  - name: 'discord-info'
+    webhook_configs:
+      - url: '{{ .ExternalURL }}/api/webhooks/discord/info'
+        send_resolved: true
+        title: 'ℹ️ Information - Sermon Uploader'
+        text: |
+          **Daily Alert Summary**
+          
+          {{ range .Alerts }}
+          • {{ .Annotations.summary }} ({{ .Labels.service }})
+          {{ end }}
+
+  # Email notifications (optional)
+  - name: 'email-admin'
+    email_configs:
+      - to: 'admin@sermon-uploader.local'
+        subject: 'Alert: {{ .GroupLabels.SortedPairs.Values | join " " }}'
+        body: |
+          Alert Details:
+          {{ range .Alerts }}
+          - Alert: {{ .Annotations.summary }}
+          - Description: {{ .Annotations.description }}
+          - Severity: {{ .Labels.severity }}
+          - Time: {{ .StartsAt }}
+          {{ if .Annotations.runbook_url }}
+          - Runbook: {{ .Annotations.runbook_url }}
+          {{ end }}
+          {{ end }}
+
+# Templates for custom formatting
+templates:
+  - '/etc/alertmanager/templates/*.tmpl'

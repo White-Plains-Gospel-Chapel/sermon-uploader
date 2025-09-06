@@ -1,0 +1,806 @@
+name: Post-deployment Verification
+
+on:
+  workflow_dispatch:
+    inputs:
+      deployment_commit:
+        description: 'Commit SHA that was deployed'
+        required: true
+        type: string
+      environment:
+        description: 'Environment that was deployed to'
+        required: false
+        default: 'production'
+        type: string
+      deployment_time:
+        description: 'Deployment duration'
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      deployment_commit:
+        description: 'Commit SHA that was deployed'
+        required: true
+        type: string
+      environment:
+        description: 'Environment that was deployed to'
+        required: false
+        default: 'production'
+        type: string
+      deployment_time:
+        description: 'Deployment duration'
+        required: false
+        type: string
+
+# Allow concurrent verifications for different commits
+concurrency:
+  group: post-deployment-verification-${{ inputs.deployment_commit }}
+  cancel-in-progress: false
+
+env:
+  VERIFICATION_TIMEOUT: 1800  # 30 minutes
+  PERFORMANCE_THRESHOLD_MS: 2000
+  MEMORY_THRESHOLD_MB: 512
+  CPU_THRESHOLD_PERCENT: 80
+
+jobs:
+  # Health and connectivity verification
+  connectivity-verification:
+    name: Connectivity Verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    outputs:
+      api_healthy: ${{ steps.health.outputs.api_healthy }}
+      minio_healthy: ${{ steps.health.outputs.minio_healthy }}
+      response_time: ${{ steps.health.outputs.response_time }}
+    
+    steps:
+      - name: Basic connectivity check
+        id: connectivity
+        run: |
+          echo "🔍 Testing basic connectivity to production environment..."
+          
+          # Test if we can reach the Pi (this assumes we have network access)
+          # In a real scenario, this might use a public endpoint or VPN
+          PI_HOST="${{ secrets.PI_HOST || '192.168.1.127' }}"
+          
+          echo "Testing connectivity to $PI_HOST..."
+          if timeout 10 ping -c 3 "$PI_HOST" >/dev/null 2>&1; then
+            echo "✅ Pi is reachable"
+            echo "connectivity=success" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Pi is not reachable - verification will be limited"
+            echo "connectivity=limited" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Application health checks
+        id: health
+        run: |
+          echo "🏥 Performing comprehensive health checks..."
+          
+          PI_HOST="${{ secrets.PI_HOST || '192.168.1.127' }}"
+          
+          # Health check endpoints to test
+          ENDPOINTS=(
+            "http://${PI_HOST}:8000/api/health|Main API"
+            "http://${PI_HOST}:9000/minio/health/live|MinIO Health"
+            "http://${PI_HOST}:8000/api/status|Application Status"
+          )
+          
+          API_HEALTHY=false
+          MINIO_HEALTHY=false
+          TOTAL_RESPONSE_TIME=0
+          SUCCESSFUL_CHECKS=0
+          
+          for endpoint in "${ENDPOINTS[@]}"; do
+            URL=$(echo "$endpoint" | cut -d'|' -f1)
+            NAME=$(echo "$endpoint" | cut -d'|' -f2)
+            
+            echo "Testing $NAME at $URL..."
+            
+            # Test with timeout and measure response time
+            START_TIME=$(date +%s%3N)
+            if timeout 15 curl -f -s "$URL" >/dev/null 2>&1; then
+              END_TIME=$(date +%s%3N)
+              RESPONSE_TIME=$((END_TIME - START_TIME))
+              
+              echo "✅ $NAME: Healthy (${RESPONSE_TIME}ms)"
+              
+              # Track specific service health
+              if [[ "$NAME" == *"API"* ]]; then
+                API_HEALTHY=true
+              elif [[ "$NAME" == *"MinIO"* ]]; then
+                MINIO_HEALTHY=true
+              fi
+              
+              TOTAL_RESPONSE_TIME=$((TOTAL_RESPONSE_TIME + RESPONSE_TIME))
+              SUCCESSFUL_CHECKS=$((SUCCESSFUL_CHECKS + 1))
+            else
+              echo "❌ $NAME: Failed health check"
+            fi
+          done
+          
+          # Calculate average response time
+          if [ $SUCCESSFUL_CHECKS -gt 0 ]; then
+            AVG_RESPONSE_TIME=$((TOTAL_RESPONSE_TIME / SUCCESSFUL_CHECKS))
+          else
+            AVG_RESPONSE_TIME=0
+          fi
+          
+          echo "api_healthy=$API_HEALTHY" >> $GITHUB_OUTPUT
+          echo "minio_healthy=$MINIO_HEALTHY" >> $GITHUB_OUTPUT
+          echo "response_time=${AVG_RESPONSE_TIME}" >> $GITHUB_OUTPUT
+          
+          # Evaluate overall health
+          if [ "$API_HEALTHY" = true ] && [ "$MINIO_HEALTHY" = true ]; then
+            echo "✅ All critical services are healthy"
+            echo "📊 Average response time: ${AVG_RESPONSE_TIME}ms"
+          else
+            echo "❌ Some critical services are not healthy"
+            echo "API Healthy: $API_HEALTHY"
+            echo "MinIO Healthy: $MINIO_HEALTHY"
+            exit 1
+          fi
+
+  # Performance verification
+  performance-verification:
+    name: Performance Verification
+    needs: connectivity-verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: needs.connectivity-verification.outputs.api_healthy == 'true'
+    
+    outputs:
+      performance_score: ${{ steps.perf.outputs.score }}
+      load_test_passed: ${{ steps.load.outputs.passed }}
+    
+    steps:
+      - name: Response time verification
+        id: response-time
+        run: |
+          echo "⚡ Verifying response time performance..."
+          
+          PI_HOST="${{ secrets.PI_HOST || '192.168.1.127' }}"
+          BASELINE_RESPONSE="${{ needs.connectivity-verification.outputs.response_time }}"
+          
+          echo "Baseline response time: ${BASELINE_RESPONSE}ms"
+          echo "Performance threshold: ${{ env.PERFORMANCE_THRESHOLD_MS }}ms"
+          
+          if [ "$BASELINE_RESPONSE" -le "${{ env.PERFORMANCE_THRESHOLD_MS }}" ]; then
+            echo "✅ Response time within acceptable threshold"
+          else
+            echo "⚠️ Response time exceeds threshold (${BASELINE_RESPONSE}ms > ${{ env.PERFORMANCE_THRESHOLD_MS }}ms)"
+          fi
+
+      - name: Load testing
+        id: load
+        run: |
+          echo "🔄 Performing basic load testing..."
+          
+          PI_HOST="${{ secrets.PI_HOST || '192.168.1.127' }}"
+          
+          # Simple concurrent request test
+          echo "Testing with 10 concurrent requests..."
+          
+          FAILED_REQUESTS=0
+          TOTAL_REQUESTS=10
+          
+          for i in $(seq 1 $TOTAL_REQUESTS); do
+            if ! timeout 10 curl -f -s "http://${PI_HOST}:8000/api/health" >/dev/null 2>&1; then
+              FAILED_REQUESTS=$((FAILED_REQUESTS + 1))
+            fi &
+          done
+          
+          wait  # Wait for all background requests to complete
+          
+          SUCCESS_RATE=$(( (TOTAL_REQUESTS - FAILED_REQUESTS) * 100 / TOTAL_REQUESTS ))
+          
+          echo "Load test results:"
+          echo "Total requests: $TOTAL_REQUESTS"
+          echo "Failed requests: $FAILED_REQUESTS"
+          echo "Success rate: ${SUCCESS_RATE}%"
+          
+          if [ $SUCCESS_RATE -ge 90 ]; then
+            echo "✅ Load test passed (${SUCCESS_RATE}% success rate)"
+            echo "passed=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Load test failed (${SUCCESS_RATE}% success rate)"
+            echo "passed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Performance scoring
+        id: perf
+        run: |
+          echo "📊 Calculating performance score..."
+          
+          RESPONSE_TIME="${{ needs.connectivity-verification.outputs.response_time }}"
+          LOAD_PASSED="${{ steps.load.outputs.passed }}"
+          
+          SCORE=100
+          
+          # Deduct points for slow response times
+          if [ "$RESPONSE_TIME" -gt 500 ]; then
+            SCORE=$((SCORE - 10))
+          fi
+          if [ "$RESPONSE_TIME" -gt 1000 ]; then
+            SCORE=$((SCORE - 20))
+          fi
+          if [ "$RESPONSE_TIME" -gt 2000 ]; then
+            SCORE=$((SCORE - 30))
+          fi
+          
+          # Deduct points for load test failures
+          if [ "$LOAD_PASSED" != "true" ]; then
+            SCORE=$((SCORE - 40))
+          fi
+          
+          echo "Performance Score: ${SCORE}/100"
+          echo "score=$SCORE" >> $GITHUB_OUTPUT
+
+  # Functional verification
+  functional-verification:
+    name: Functional Verification
+    needs: connectivity-verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: needs.connectivity-verification.outputs.api_healthy == 'true'
+    
+    outputs:
+      upload_endpoint_working: ${{ steps.endpoints.outputs.upload_working }}
+      minio_accessible: ${{ steps.storage.outputs.minio_accessible }}
+      all_functions_working: ${{ steps.summary.outputs.all_working }}
+    
+    steps:
+      - name: API endpoint verification
+        id: endpoints
+        run: |
+          echo "🔍 Verifying API endpoints..."
+          
+          PI_HOST="${{ secrets.PI_HOST || '192.168.1.127' }}"
+          
+          # Test main API endpoints
+          ENDPOINTS=(
+            "/api/health|GET|Health Check"
+            "/api/status|GET|Status"
+            "/api/files|GET|File List"
+          )
+          
+          ALL_WORKING=true
+          
+          for endpoint in "${ENDPOINTS[@]}"; do
+            PATH=$(echo "$endpoint" | cut -d'|' -f1)
+            METHOD=$(echo "$endpoint" | cut -d'|' -f2)
+            NAME=$(echo "$endpoint" | cut -d'|' -f3)
+            
+            echo "Testing $NAME ($METHOD $PATH)..."
+            
+            if timeout 15 curl -X "$METHOD" -f -s "http://${PI_HOST}:8000$PATH" >/dev/null 2>&1; then
+              echo "✅ $NAME: Working"
+            else
+              echo "❌ $NAME: Failed"
+              ALL_WORKING=false
+            fi
+          done
+          
+          # Test upload endpoint (without actually uploading)
+          echo "Testing upload endpoint availability..."
+          if timeout 15 curl -X POST -f -s -w "%{http_code}" "http://${PI_HOST}:8000/api/upload" >/dev/null 2>&1; then
+            echo "✅ Upload endpoint: Accessible"
+            echo "upload_working=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Upload endpoint: Not accessible"
+            echo "upload_working=false" >> $GITHUB_OUTPUT
+            ALL_WORKING=false
+          fi
+          
+          echo "all_working=$ALL_WORKING" >> $GITHUB_OUTPUT
+
+      - name: Storage system verification
+        id: storage
+        run: |
+          echo "💾 Verifying storage system (MinIO)..."
+          
+          PI_HOST="${{ secrets.PI_HOST || '192.168.1.127' }}"
+          
+          # Test MinIO API endpoints
+          MINIO_ENDPOINTS=(
+            "/minio/health/live|MinIO Liveness"
+            "/minio/health/ready|MinIO Readiness"
+          )
+          
+          MINIO_HEALTHY=true
+          
+          for endpoint in "${MINIO_ENDPOINTS[@]}"; do
+            PATH=$(echo "$endpoint" | cut -d'|' -f1)
+            NAME=$(echo "$endpoint" | cut -d'|' -f2)
+            
+            echo "Testing $NAME..."
+            
+            if timeout 15 curl -f -s "http://${PI_HOST}:9000$PATH" >/dev/null 2>&1; then
+              echo "✅ $NAME: Healthy"
+            else
+              echo "❌ $NAME: Failed"
+              MINIO_HEALTHY=false
+            fi
+          done
+          
+          echo "minio_accessible=$MINIO_HEALTHY" >> $GITHUB_OUTPUT
+          
+          if [ "$MINIO_HEALTHY" = true ]; then
+            echo "✅ MinIO storage system is healthy"
+          else
+            echo "❌ MinIO storage system has issues"
+          fi
+
+      - name: Functional verification summary
+        id: summary
+        run: |
+          ENDPOINTS_WORKING="${{ steps.endpoints.outputs.all_working }}"
+          UPLOAD_WORKING="${{ steps.endpoints.outputs.upload_working }}"
+          MINIO_WORKING="${{ steps.storage.outputs.minio_accessible }}"
+          
+          if [ "$ENDPOINTS_WORKING" = true ] && [ "$UPLOAD_WORKING" = true ] && [ "$MINIO_WORKING" = true ]; then
+            echo "✅ All functional verification tests passed"
+            echo "all_working=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Some functional verification tests failed"
+            echo "Endpoints: $ENDPOINTS_WORKING"
+            echo "Upload: $UPLOAD_WORKING"  
+            echo "MinIO: $MINIO_WORKING"
+            echo "all_working=false" >> $GITHUB_OUTPUT
+          fi
+
+  # Resource monitoring verification
+  resource-verification:
+    name: Resource Monitoring Verification
+    needs: connectivity-verification
+    runs-on: self-hosted  # Run on Pi to check actual resource usage
+    timeout-minutes: 10
+    if: needs.connectivity-verification.outputs.api_healthy == 'true'
+    
+    outputs:
+      memory_usage_mb: ${{ steps.resources.outputs.memory_mb }}
+      cpu_usage_percent: ${{ steps.resources.outputs.cpu_percent }}
+      disk_usage_percent: ${{ steps.resources.outputs.disk_percent }}
+      resources_healthy: ${{ steps.resources.outputs.healthy }}
+    
+    steps:
+      - name: Check resource usage
+        id: resources
+        run: |
+          echo "📊 Monitoring system resources after deployment..."
+          
+          cd /opt/sermon-uploader
+          
+          # Get container resource usage
+          CONTAINER_NAME=$(docker compose -f docker-compose.single.yml ps -q sermon-uploader)
+          
+          if [ -n "$CONTAINER_NAME" ]; then
+            # Get resource stats
+            STATS=$(docker stats --no-stream --format "{{.CPUPerc}},{{.MemUsage}}" "$CONTAINER_NAME")
+            
+            if [ -n "$STATS" ]; then
+              CPU_PERCENT=$(echo "$STATS" | cut -d',' -f1 | sed 's/%//')
+              MEMORY_USAGE=$(echo "$STATS" | cut -d',' -f2 | cut -d'/' -f1)
+              
+              # Convert memory to MB (handle different units)
+              if [[ "$MEMORY_USAGE" == *"GiB" ]]; then
+                MEMORY_MB=$(echo "$MEMORY_USAGE" | sed 's/GiB//' | awk '{print $1 * 1024}')
+              elif [[ "$MEMORY_USAGE" == *"MiB" ]]; then
+                MEMORY_MB=$(echo "$MEMORY_USAGE" | sed 's/MiB//')
+              else
+                # Assume MB if no unit
+                MEMORY_MB=$(echo "$MEMORY_USAGE" | sed 's/[^0-9.]*//g')
+              fi
+              
+              echo "Container Resource Usage:"
+              echo "CPU: ${CPU_PERCENT}%"
+              echo "Memory: ${MEMORY_MB}MB"
+              
+            else
+              echo "Could not get container stats"
+              CPU_PERCENT=0
+              MEMORY_MB=0
+            fi
+          else
+            echo "Container not found"
+            CPU_PERCENT=0
+            MEMORY_MB=0
+          fi
+          
+          # Get system disk usage
+          DISK_USAGE=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
+          
+          echo "System disk usage: ${DISK_USAGE}%"
+          
+          # Set outputs
+          echo "cpu_percent=${CPU_PERCENT}" >> $GITHUB_OUTPUT
+          echo "memory_mb=${MEMORY_MB}" >> $GITHUB_OUTPUT
+          echo "disk_percent=${DISK_USAGE}" >> $GITHUB_OUTPUT
+          
+          # Check if resources are within healthy limits
+          RESOURCES_HEALTHY=true
+          
+          if (( $(echo "$CPU_PERCENT > ${{ env.CPU_THRESHOLD_PERCENT }}" | bc -l) )); then
+            echo "⚠️ High CPU usage: ${CPU_PERCENT}%"
+            RESOURCES_HEALTHY=false
+          fi
+          
+          if (( $(echo "$MEMORY_MB > ${{ env.MEMORY_THRESHOLD_MB }}" | bc -l) )); then
+            echo "⚠️ High memory usage: ${MEMORY_MB}MB"
+            RESOURCES_HEALTHY=false
+          fi
+          
+          if [ "$DISK_USAGE" -gt 80 ]; then
+            echo "⚠️ High disk usage: ${DISK_USAGE}%"
+            RESOURCES_HEALTHY=false
+          fi
+          
+          echo "healthy=$RESOURCES_HEALTHY" >> $GITHUB_OUTPUT
+          
+          if [ "$RESOURCES_HEALTHY" = true ]; then
+            echo "✅ Resource usage is within healthy limits"
+          else
+            echo "⚠️ Some resources are above recommended thresholds"
+          fi
+
+  # Security verification
+  security-verification:
+    name: Security Verification
+    needs: connectivity-verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: needs.connectivity-verification.outputs.api_healthy == 'true'
+    
+    outputs:
+      security_headers_present: ${{ steps.security.outputs.headers_present }}
+      no_sensitive_exposure: ${{ steps.security.outputs.no_exposure }}
+      security_score: ${{ steps.security.outputs.score }}
+    
+    steps:
+      - name: Security headers verification
+        id: security
+        run: |
+          echo "🔒 Verifying security configuration..."
+          
+          PI_HOST="${{ secrets.PI_HOST || '192.168.1.127' }}"
+          
+          # Check for security headers
+          echo "Checking security headers..."
+          HEADERS_RESPONSE=$(curl -I -s --max-time 10 "http://${PI_HOST}:8000/api/health" || echo "CURL_FAILED")
+          
+          SECURITY_HEADERS_FOUND=0
+          SECURITY_HEADERS_EXPECTED=(
+            "X-Content-Type-Options"
+            "X-Frame-Options"
+            "Content-Security-Policy"
+          )
+          
+          for header in "${SECURITY_HEADERS_EXPECTED[@]}"; do
+            if echo "$HEADERS_RESPONSE" | grep -qi "$header"; then
+              echo "✅ $header: Present"
+              SECURITY_HEADERS_FOUND=$((SECURITY_HEADERS_FOUND + 1))
+            else
+              echo "⚠️ $header: Missing"
+            fi
+          done
+          
+          # Check for sensitive information exposure
+          echo "Checking for sensitive information exposure..."
+          
+          SENSITIVE_EXPOSED=false
+          SENSITIVE_PATTERNS=(
+            "password"
+            "secret"
+            "key"
+            "token"
+            "credentials"
+          )
+          
+          HEALTH_RESPONSE=$(curl -s --max-time 10 "http://${PI_HOST}:8000/api/health" || echo "{}")
+          
+          for pattern in "${SENSITIVE_PATTERNS[@]}"; do
+            if echo "$HEALTH_RESPONSE" | grep -qi "$pattern"; then
+              echo "⚠️ Potentially sensitive information in API response: $pattern"
+              SENSITIVE_EXPOSED=true
+            fi
+          done
+          
+          if [ "$SENSITIVE_EXPOSED" = false ]; then
+            echo "✅ No sensitive information exposed in API responses"
+          fi
+          
+          # Calculate security score
+          SECURITY_SCORE=$((SECURITY_HEADERS_FOUND * 20))  # Max 60 for headers
+          if [ "$SENSITIVE_EXPOSED" = false ]; then
+            SECURITY_SCORE=$((SECURITY_SCORE + 40))  # 40 points for no exposure
+          fi
+          
+          echo "Security Score: ${SECURITY_SCORE}/100"
+          
+          echo "headers_present=${SECURITY_HEADERS_FOUND}" >> $GITHUB_OUTPUT
+          echo "no_exposure=$( [ "$SENSITIVE_EXPOSED" = false ] && echo true || echo false )" >> $GITHUB_OUTPUT
+          echo "score=${SECURITY_SCORE}" >> $GITHUB_OUTPUT
+
+  # Application-specific verification
+  audio-functionality-verification:
+    name: Audio Functionality Verification
+    needs: functional-verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: needs.functional-verification.outputs.all_functions_working == 'true'
+    
+    outputs:
+      audio_processing_ready: ${{ steps.audio.outputs.processing_ready }}
+      minio_buckets_configured: ${{ steps.audio.outputs.buckets_configured }}
+    
+    steps:
+      - name: Audio processing verification
+        id: audio
+        run: |
+          echo "🎵 Verifying audio processing functionality..."
+          
+          PI_HOST="${{ secrets.PI_HOST || '192.168.1.127' }}"
+          
+          # Check if audio processing endpoints are available
+          echo "Testing audio-specific endpoints..."
+          
+          AUDIO_ENDPOINTS=(
+            "/api/files?type=wav|WAV Files List"
+            "/api/files?type=aac|AAC Files List"  
+            "/api/status|Processing Status"
+          )
+          
+          AUDIO_PROCESSING_READY=true
+          
+          for endpoint in "${AUDIO_ENDPOINTS[@]}"; do
+            PATH=$(echo "$endpoint" | cut -d'|' -f1)
+            NAME=$(echo "$endpoint" | cut -d'|' -f2)
+            
+            echo "Testing $NAME..."
+            
+            if timeout 15 curl -f -s "http://${PI_HOST}:8000$PATH" >/dev/null 2>&1; then
+              echo "✅ $NAME: Available"
+            else
+              echo "❌ $NAME: Not available"
+              AUDIO_PROCESSING_READY=false
+            fi
+          done
+          
+          echo "processing_ready=$AUDIO_PROCESSING_READY" >> $GITHUB_OUTPUT
+          
+          # Verify MinIO bucket structure
+          echo "Verifying MinIO bucket configuration..."
+          
+          # This would ideally use MinIO client, but for now check if MinIO is responding
+          if timeout 15 curl -f -s "http://${PI_HOST}:9000/minio/health/live" >/dev/null 2>&1; then
+            echo "✅ MinIO is accessible for audio storage"
+            echo "buckets_configured=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ MinIO is not accessible"
+            echo "buckets_configured=false" >> $GITHUB_OUTPUT
+          fi
+
+  # Verification summary and reporting
+  verification-summary:
+    name: Verification Summary
+    needs: 
+      - connectivity-verification
+      - performance-verification
+      - functional-verification
+      - resource-verification
+      - security-verification
+      - audio-functionality-verification
+    runs-on: ubuntu-latest
+    if: always()
+    
+    outputs:
+      overall_status: ${{ steps.summary.outputs.status }}
+      verification_report: ${{ steps.summary.outputs.report }}
+    
+    steps:
+      - name: Generate comprehensive verification report
+        id: summary
+        run: |
+          echo "📊 Generating post-deployment verification report..."
+          
+          # Collect all results
+          CONNECTIVITY="${{ needs.connectivity-verification.result }}"
+          PERFORMANCE="${{ needs.performance-verification.result }}"
+          FUNCTIONAL="${{ needs.functional-verification.result }}"
+          RESOURCES="${{ needs.resource-verification.result }}"
+          SECURITY="${{ needs.security-verification.result }}"
+          AUDIO="${{ needs.audio-functionality-verification.result }}"
+          
+          # Detailed metrics
+          RESPONSE_TIME="${{ needs.connectivity-verification.outputs.response_time }}"
+          PERF_SCORE="${{ needs.performance-verification.outputs.performance_score }}"
+          MEMORY_USAGE="${{ needs.resource-verification.outputs.memory_usage_mb }}"
+          CPU_USAGE="${{ needs.resource-verification.outputs.cpu_usage_percent }}"
+          SECURITY_SCORE="${{ needs.security-verification.outputs.security_score }}"
+          
+          # Create detailed report
+          cat > verification-report.md << EOF
+          # Post-deployment Verification Report
+          
+          **Deployment Commit:** \`${{ inputs.deployment_commit }}\`
+          **Environment:** ${{ inputs.environment }}
+          **Verification Time:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          **Deployment Duration:** ${{ inputs.deployment_time || 'N/A' }}
+          
+          ## Verification Results Summary
+          
+          | Category | Status | Score/Metrics | Details |
+          |----------|---------|---------------|---------|
+          | Connectivity | $CONNECTIVITY | Response: ${RESPONSE_TIME}ms | API and MinIO accessibility |
+          | Performance | $PERFORMANCE | Score: ${PERF_SCORE}/100 | Load testing and response times |
+          | Functionality | $FUNCTIONAL | All Endpoints | Core application features |
+          | Resources | $RESOURCES | CPU: ${CPU_USAGE}%, RAM: ${MEMORY_USAGE}MB | System resource utilization |
+          | Security | $SECURITY | Score: ${SECURITY_SCORE}/100 | Headers and exposure checks |
+          | Audio Features | $AUDIO | Audio Processing | Sermon-specific functionality |
+          
+          ## Detailed Analysis
+          
+          ### Performance Metrics
+          - **Response Time:** ${RESPONSE_TIME}ms (threshold: ${{ env.PERFORMANCE_THRESHOLD_MS }}ms)
+          - **Load Test:** ${{ needs.performance-verification.outputs.load_test_passed == 'true' && 'Passed' || 'Failed' }}
+          - **Performance Score:** ${PERF_SCORE}/100
+          
+          ### Resource Utilization
+          - **CPU Usage:** ${CPU_USAGE}% (threshold: ${{ env.CPU_THRESHOLD_PERCENT }}%)
+          - **Memory Usage:** ${MEMORY_USAGE}MB (threshold: ${{ env.MEMORY_THRESHOLD_MB }}MB)
+          - **Resource Health:** ${{ needs.resource-verification.outputs.resources_healthy == 'true' && 'Healthy' || 'Concerning' }}
+          
+          ### Security Status
+          - **Security Headers:** ${{ needs.security-verification.outputs.security_headers_present }}/3 present
+          - **No Sensitive Exposure:** ${{ needs.security-verification.outputs.no_sensitive_exposure == 'true' && 'Confirmed' || 'Issues Found' }}
+          - **Security Score:** ${SECURITY_SCORE}/100
+          
+          ### Audio Processing
+          - **Processing Ready:** ${{ needs.audio-functionality-verification.outputs.audio_processing_ready == 'true' && 'Yes' || 'No' }}
+          - **MinIO Configured:** ${{ needs.audio-functionality-verification.outputs.minio_buckets_configured == 'true' && 'Yes' || 'No' }}
+          
+          ## Overall Assessment
+          EOF
+          
+          # Calculate overall status
+          FAILED_COUNT=0
+          TOTAL_COUNT=6
+          CRITICAL_FAILURES=0
+          
+          for status in "$CONNECTIVITY" "$PERFORMANCE" "$FUNCTIONAL" "$RESOURCES" "$SECURITY" "$AUDIO"; do
+            if [ "$status" != "success" ] && [ "$status" != "skipped" ]; then
+              FAILED_COUNT=$((FAILED_COUNT + 1))
+              # Count critical failures (connectivity, functional)
+              if [ "$status" = "$CONNECTIVITY" ] || [ "$status" = "$FUNCTIONAL" ]; then
+                CRITICAL_FAILURES=$((CRITICAL_FAILURES + 1))
+              fi
+            fi
+          done
+          
+          if [ $CRITICAL_FAILURES -gt 0 ]; then
+            echo "status=critical_failure" >> $GITHUB_OUTPUT
+            echo "🚨 **CRITICAL FAILURE:** Essential services are not functioning properly!" >> verification-report.md
+            echo "" >> verification-report.md
+            echo "**Immediate action required:** Check application health and consider rollback." >> verification-report.md
+          elif [ $FAILED_COUNT -eq 0 ]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "✅ **VERIFICATION SUCCESSFUL:** All systems operational and performing within expected parameters." >> verification-report.md
+            echo "" >> verification-report.md
+            echo "**Deployment Status:** Fully operational and ready for production use." >> verification-report.md
+          elif [ $FAILED_COUNT -le 2 ]; then
+            echo "status=warning" >> $GITHUB_OUTPUT
+            echo "⚠️ **MINOR ISSUES DETECTED:** Core functionality is working but some metrics are concerning." >> verification-report.md
+            echo "" >> verification-report.md
+            echo "**Recommended Action:** Monitor closely and address issues during next maintenance window." >> verification-report.md
+          else
+            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "❌ **VERIFICATION FAILED:** Multiple systems showing issues." >> verification-report.md
+            echo "" >> verification-report.md
+            echo "**Recommended Action:** Investigate issues and consider rollback if problems persist." >> verification-report.md
+          fi
+          
+          echo "" >> verification-report.md
+          echo "**Failed Checks:** $FAILED_COUNT/$TOTAL_COUNT" >> verification-report.md
+          echo "**Critical Failures:** $CRITICAL_FAILURES" >> verification-report.md
+          
+          # Set report output
+          echo "report<<REPORT_EOF" >> $GITHUB_OUTPUT
+          cat verification-report.md >> $GITHUB_OUTPUT
+          echo "REPORT_EOF" >> $GITHUB_OUTPUT
+          
+          # Show report
+          cat verification-report.md
+
+      - name: Create GitHub deployment status
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status = '${{ steps.summary.outputs.status }}';
+            let state = 'success';
+            let description = 'Post-deployment verification passed';
+            
+            if (status === 'critical_failure') {
+              state = 'failure';
+              description = 'Critical verification failures detected';
+            } else if (status === 'failure') {
+              state = 'failure'; 
+              description = 'Multiple verification failures detected';
+            } else if (status === 'warning') {
+              state = 'success';  // Don't fail deployment, but log warning
+              description = 'Verification passed with warnings';
+            }
+            
+            try {
+              await github.rest.repos.createDeploymentStatus({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                deployment_id: context.payload.deployment?.id || 0,
+                state: state,
+                description: description,
+                environment_url: 'http://${{ secrets.PI_HOST || "192.168.1.127" }}:8000',
+                log_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+              });
+            } catch (error) {
+              console.log('Could not create deployment status:', error.message);
+            }
+
+      - name: Discord verification report
+        if: always()
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          if [ -n "$DISCORD_WEBHOOK" ]; then
+            STATUS="${{ steps.summary.outputs.status }}"
+            
+            case "$STATUS" in
+              "success")
+                COLOR=65280  # Green
+                TITLE="✅ Post-deployment Verification Successful"
+                DESCRIPTION="All systems operational and performing well"
+                ;;
+              "warning")
+                COLOR=16776960  # Yellow
+                TITLE="⚠️ Post-deployment Verification - Minor Issues"
+                DESCRIPTION="Core functionality working but some metrics concerning"
+                ;;
+              "failure")
+                COLOR=16753920  # Orange
+                TITLE="❌ Post-deployment Verification Failed"
+                DESCRIPTION="Multiple systems showing issues"
+                ;;
+              "critical_failure")
+                COLOR=16711680  # Red
+                TITLE="🚨 Critical Post-deployment Failures"
+                DESCRIPTION="Essential services not functioning - immediate action required"
+                ;;
+            esac
+            
+            curl -X POST "$DISCORD_WEBHOOK" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"embeds\": [{
+                  \"title\": \"$TITLE\",
+                  \"description\": \"$DESCRIPTION\",
+                  \"color\": $COLOR,
+                  \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",
+                  \"fields\": [
+                    {\"name\": \"Environment\", \"value\": \"${{ inputs.environment }}\", \"inline\": true},
+                    {\"name\": \"Commit\", \"value\": \"${{ inputs.deployment_commit }}\", \"inline\": true},
+                    {\"name\": \"Response Time\", \"value\": \"${{ needs.connectivity-verification.outputs.response_time }}ms\", \"inline\": true},
+                    {\"name\": \"Performance Score\", \"value\": \"${{ needs.performance-verification.outputs.performance_score }}/100\", \"inline\": true},
+                    {\"name\": \"Security Score\", \"value\": \"${{ needs.security-verification.outputs.security_score }}/100\", \"inline\": true},
+                    {\"name\": \"Resource Health\", \"value\": \"${{ needs.resource-verification.outputs.resources_healthy == 'true' && 'Healthy' || 'Concerning' }}\", \"inline\": true}
+                  ]
+                }]
+              }"
+          fi
+
+      - name: Fail job if critical issues found
+        if: steps.summary.outputs.status == 'critical_failure'
+        run: |
+          echo "💥 Critical post-deployment verification failures detected!"
+          echo "This indicates serious issues with the deployment."
+          echo "Check the verification report and consider immediate rollback."
+          exit 1

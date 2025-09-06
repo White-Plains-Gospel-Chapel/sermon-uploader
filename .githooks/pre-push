@@ -1,82 +1,162 @@
 #!/bin/bash
+# Pre-push hook that prevents bad code from being pushed to GitHub
+# This runs BEFORE code leaves your local machine
+
 set -e
 
-echo "🚀 Running pre-push checks..."
+echo "🛡️ Running pre-push validation to prevent bad code deployment..."
 
-# Check if we're pushing to master/main - only then run Pi checks
-BRANCH=$(git rev-parse --abbrev-ref HEAD)
-if [ "$BRANCH" = "master" ] || [ "$BRANCH" = "main" ]; then
-  echo "🎯 Pushing to $BRANCH - running Pi deployment verification..."
-  
-  # Ask user if they want to run Pi checks (saves time for non-deployment pushes)
-  echo ""
-  echo "💰 Running Pi checks now saves GitHub Actions minutes!"
-  echo "🔍 Do you want to verify Pi connectivity before pushing? (Y/n)"
-  read -r -t 10 RESPONSE || RESPONSE="y"
-  
-  if [ "$RESPONSE" = "n" ] || [ "$RESPONSE" = "N" ]; then
-    echo "⚠️ Skipping Pi verification - deployment may fail in GitHub Actions"
-  else
-    echo "🔍 Running Pi verification..."
-    if [ -f "./pre-deploy-check.sh" ]; then
-      ./pre-deploy-check.sh || {
-        echo ""
-        echo "❌ Pi verification failed!"
-        echo "💰 This would have failed in GitHub Actions (costing money)"
-        echo "🔧 Fix the issues above before pushing"
-        exit 1
-      }
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+# Track if any checks fail
+FAILED=0
+
+# Function to run a check
+run_check() {
+    local name="$1"
+    local command="$2"
+    
+    echo -e "${YELLOW}Running: $name${NC}"
+    if eval "$command"; then
+        echo -e "${GREEN}✅ $name passed${NC}"
     else
-      echo "⚠️ pre-deploy-check.sh not found, skipping Pi verification"
+        echo -e "${RED}❌ $name failed${NC}"
+        FAILED=1
     fi
-  fi
-else
-  echo "ℹ️ Not pushing to main branch, skipping Pi verification"
+}
+
+# =============================================================================
+# CRITICAL CHECKS - These MUST pass
+# =============================================================================
+
+echo "📋 Phase 1: Critical Security Checks"
+
+# Check for secrets
+run_check "Secret detection" "
+    if command -v trufflehog >/dev/null 2>&1; then
+        trufflehog filesystem . --no-update --fail --only-verified 2>/dev/null
+    else
+        # Fallback to basic secret patterns
+        ! grep -r -E '(api_key|apikey|api-key|secret|password|token|private|credential)\\s*=\\s*[\"'\'']\S+[\"'\'']' --include='*.go' --include='*.js' --include='*.ts' --include='*.py' --include='*.yml' --include='*.yaml' --include='*.env' --exclude-dir='.git' --exclude-dir='node_modules' --exclude-dir='vendor' .
+    fi
+"
+
+# Check for hardcoded credentials
+run_check "Hardcoded credentials check" "
+    ! grep -r -E '(gaius|John 3:16|192\\.168\\.|localhost:9000)' --include='*.go' --include='*.js' --include='*.ts' --exclude-dir='.git' --exclude-dir='node_modules' --exclude='*.md' --exclude='*.example' --exclude='*.test.*' .
+"
+
+echo "📋 Phase 2: Syntax and Build Validation"
+
+# Go syntax check
+if [ -d "backend" ]; then
+    run_check "Go syntax" "
+        cd backend && 
+        gofmt -l . | (! grep .) &&
+        go mod tidy &&
+        git diff --quiet go.mod go.sum &&
+        cd ..
+    "
+    
+    run_check "Go build" "
+        cd backend &&
+        go build -o /tmp/test-build ./... &&
+        rm -f /tmp/test-build &&
+        cd ..
+    "
+    
+    run_check "Go tests" "
+        cd backend &&
+        go test -race -short ./... &&
+        cd ..
+    "
 fi
 
-# Additional checks before pushing to avoid deployment failures
-echo ""
-echo "🏗️ Performing comprehensive build test..."
+# Python syntax check
+if [ -d "pi-processor" ]; then
+    run_check "Python syntax" "
+        python3 -m py_compile pi-processor/*.py
+    "
+fi
 
-# Test Docker build completely (not just syntax)
-if command -v docker >/dev/null 2>&1; then
-  echo "🐳 Testing full Docker build..."
-  docker build -t sermon-uploader-precheck . || {
-    echo "❌ Docker build failed - would fail in GitHub Actions"
+# TypeScript/JavaScript check
+if [ -d "frontend" ] && [ -f "frontend/package.json" ]; then
+    run_check "TypeScript build" "
+        cd frontend &&
+        npm run type-check 2>/dev/null &&
+        cd ..
+    "
+fi
+
+echo "📋 Phase 3: Configuration Validation"
+
+# Docker compose validation
+run_check "Docker Compose files" "
+    for file in docker-compose*.yml; do
+        if [ -f \"\$file\" ]; then
+            docker compose -f \"\$file\" config >/dev/null 2>&1 || exit 1
+        fi
+    done
+"
+
+# Check for required environment variables
+run_check "Environment variables" "
+    if [ -f .env.example ]; then
+        grep -q 'MINIO_ENDPOINT' .env.example &&
+        grep -q 'DISCORD_WEBHOOK_URL' .env.example
+    else
+        true
+    fi
+"
+
+echo "📋 Phase 4: Audio Quality Preservation"
+
+# Run audio quality hooks if they exist
+if [ -d "hooks" ]; then
+    for hook in hooks/check-*audio*.sh hooks/check-*wav*.sh hooks/check-*quality*.sh; do
+        if [ -f "$hook" ]; then
+            run_check "$(basename $hook)" "bash $hook"
+        fi
+    done
+fi
+
+echo "📋 Phase 5: Docker Build Test"
+
+# Test Docker build (if Dockerfile exists)
+if [ -f "Dockerfile" ]; then
+    run_check "Docker build test" "
+        docker build -t pre-push-test:latest . >/dev/null 2>&1 &&
+        docker rmi pre-push-test:latest >/dev/null 2>&1
+    "
+fi
+
+# =============================================================================
+# FINAL DECISION
+# =============================================================================
+
+if [ $FAILED -eq 1 ]; then
+    echo -e "${RED}╔════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${RED}║                    PUSH BLOCKED!                          ║${NC}"
+    echo -e "${RED}║                                                            ║${NC}"
+    echo -e "${RED}║  Bad code detected. Fix the issues above before pushing.  ║${NC}"
+    echo -e "${RED}║                                                            ║${NC}"
+    echo -e "${RED}║  This prevents:                                           ║${NC}"
+    echo -e "${RED}║  - Secret exposure                                        ║${NC}"
+    echo -e "${RED}║  - Build failures in CI/CD                                ║${NC}"
+    echo -e "${RED}║  - Deployment failures                                    ║${NC}"
+    echo -e "${RED}║  - Audio quality degradation                              ║${NC}"
+    echo -e "${RED}╚════════════════════════════════════════════════════════════╝${NC}"
     exit 1
-  }
-  
-  # Clean up test image
-  docker rmi sermon-uploader-precheck >/dev/null 2>&1 || true
-  echo "✅ Docker build test passed"
+else
+    echo -e "${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║                    VALIDATION PASSED!                     ║${NC}"
+    echo -e "${GREEN}║                                                            ║${NC}"
+    echo -e "${GREEN}║  All checks passed. Code is safe to push.                 ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}"
 fi
 
-# Test docker-compose with pull simulation
-if command -v docker-compose >/dev/null 2>&1; then
-  echo "📋 Testing docker-compose configurations..."
-  for compose_file in docker-compose*.yml; do
-    if [ -f "$compose_file" ]; then
-      echo "  🔍 Testing $compose_file services..."
-      docker-compose -f "$compose_file" config --quiet || {
-        echo "❌ $compose_file configuration invalid"
-        exit 1
-      }
-    fi
-  done
-fi
-
-echo "✅ Pre-push checks passed - safe to deploy!"
-
-# Auto-start deployment monitoring in background after push
-echo ""
-echo "📺 Starting automatic deployment monitoring..."
-(
-  # Wait for push to complete and workflow to start
-  sleep 10
-  
-  echo ""
-  echo "🚀 Deployment monitoring started automatically..."
-  ./watch-deployment.sh
-) &
-echo "💡 Monitoring will start automatically in background after push completes"
-echo ""
+exit 0

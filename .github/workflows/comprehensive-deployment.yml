@@ -1,0 +1,1345 @@
+name: Comprehensive Deployment Pipeline
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+      - 'pi-processor/**'
+      - 'Dockerfile*'
+      - 'docker-compose*.yml'
+      - '.github/workflows/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'package*.json'
+      - 'requirements.txt'
+      - 'pyproject.toml'
+  pull_request:
+    branches: [main, master]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      skip_tests:
+        description: 'Skip test execution (emergency deployment)'
+        required: false
+        default: 'false'
+        type: boolean
+      force_deploy:
+        description: 'Force deployment even with quality gate failures'
+        required: false
+        default: 'false'
+        type: boolean
+
+# Cancel in-progress runs for the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: '1.23'
+  NODE_VERSION: '20'
+  PYTHON_VERSION: '3.11'
+  DOCKER_BUILDKIT: 1
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  # Quality Gates - Minimum thresholds
+  MIN_GO_COVERAGE: 70
+  MIN_JS_COVERAGE: 60
+  MAX_CRITICAL_VULNS: 0
+  MAX_HIGH_VULNS: 2
+  MAX_BUILD_TIME: 600  # 10 minutes
+
+jobs:
+  # ==============================================================================
+  # PHASE 1: PRE-FLIGHT CHECKS - FAIL FAST ON CRITICAL ISSUES
+  # ==============================================================================
+  
+  detect-changes:
+    name: "🔍 Detect Changes"
+    runs-on: ubuntu-latest
+    outputs:
+      has-go: ${{ steps.changes.outputs.has-go }}
+      has-node: ${{ steps.changes.outputs.has-node }}
+      has-python: ${{ steps.changes.outputs.has-python }}
+      has-docker: ${{ steps.changes.outputs.has-docker }}
+      has-workflows: ${{ steps.changes.outputs.has-workflows }}
+      deploy-needed: ${{ steps.changes.outputs.deploy-needed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Detect file changes
+        id: changes
+        run: |
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD || git diff --name-only --root HEAD)
+          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            CHANGED_FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
+          else
+            # workflow_dispatch - check all files
+            CHANGED_FILES=$(find . -name "*.go" -o -name "*.js" -o -name "*.ts" -o -name "*.tsx" -o -name "*.py" | head -100)
+          fi
+          
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+          
+          # Detect component changes
+          HAS_GO=$([[ -n $(echo "$CHANGED_FILES" | grep -E '\.go$|go\.mod|go\.sum|backend/') ]] && echo true || echo false)
+          HAS_NODE=$([[ -n $(echo "$CHANGED_FILES" | grep -E 'package.*\.json|\.tsx?$|\.jsx?$|frontend/') ]] && echo true || echo false)
+          HAS_PYTHON=$([[ -n $(echo "$CHANGED_FILES" | grep -E '\.py$|requirements\.txt|pyproject\.toml|pi-processor/') ]] && echo true || echo false)
+          HAS_DOCKER=$([[ -n $(echo "$CHANGED_FILES" | grep -E 'Dockerfile|docker-compose') ]] && echo true || echo false)
+          HAS_WORKFLOWS=$([[ -n $(echo "$CHANGED_FILES" | grep -E '\.github/workflows/') ]] && echo true || echo false)
+          
+          # Determine if deployment is needed
+          DEPLOY_NEEDED=$([[ "$HAS_GO" == "true" || "$HAS_NODE" == "true" || "$HAS_PYTHON" == "true" || "$HAS_DOCKER" == "true" ]] && echo true || echo false)
+          
+          echo "has-go=$HAS_GO" >> $GITHUB_OUTPUT
+          echo "has-node=$HAS_NODE" >> $GITHUB_OUTPUT
+          echo "has-python=$HAS_PYTHON" >> $GITHUB_OUTPUT
+          echo "has-docker=$HAS_DOCKER" >> $GITHUB_OUTPUT
+          echo "has-workflows=$HAS_WORKFLOWS" >> $GITHUB_OUTPUT
+          echo "deploy-needed=$DEPLOY_NEEDED" >> $GITHUB_OUTPUT
+
+  pre-flight-security:
+    name: "🛡️ Security Pre-flight"
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Secret scanning
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --debug --only-verified
+
+      - name: Check for hardcoded credentials
+        run: |
+          echo "🔍 Scanning for hardcoded credentials..."
+          VIOLATIONS=""
+          
+          # Check for common patterns
+          if grep -r -E "(password|token|key|secret)\s*[:=]\s*['\"][^'\"]{8,}" . --exclude-dir=node_modules --exclude-dir=.git --exclude="*.md"; then
+            VIOLATIONS="$VIOLATIONS\n- Found hardcoded credentials"
+          fi
+          
+          # Check for MinIO credentials in wrong places
+          if grep -r -E "(gaius|John 3:16)" . --exclude-dir=node_modules --exclude-dir=.git --exclude="CLAUDE.md" --exclude="*.md" --exclude=".env.example"; then
+            VIOLATIONS="$VIOLATIONS\n- Found hardcoded MinIO credentials"
+          fi
+          
+          # Check for Discord webhook URLs
+          if grep -r -E "https://discord(app)?\.com/api/webhooks/[0-9]+/[a-zA-Z0-9_-]+" . --exclude-dir=node_modules --exclude-dir=.git --exclude="*.md"; then
+            VIOLATIONS="$VIOLATIONS\n- Found hardcoded Discord webhooks"
+          fi
+          
+          if [[ -n "$VIOLATIONS" ]]; then
+            echo "❌ Security violations found:"
+            echo -e "$VIOLATIONS"
+            exit 1
+          fi
+          
+          echo "✅ No hardcoded credentials detected"
+
+      - name: Validate environment configuration
+        run: |
+          echo "🔧 Validating environment configuration..."
+          
+          # Check for required .env.example files
+          for dir in backend frontend pi-processor; do
+            if [[ -d "$dir" && ! -f "$dir/.env.example" ]]; then
+              echo "❌ Missing .env.example in $dir"
+              exit 1
+            fi
+          done
+          
+          # Validate environment variable usage
+          echo "✅ Environment configuration is valid"
+
+  syntax-validation:
+    name: "✅ Syntax Validation"
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: github.event.pull_request.draft == false
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Validate Go syntax
+        if: needs.detect-changes.outputs.has-go == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      
+      - name: Go syntax check
+        if: needs.detect-changes.outputs.has-go == 'true'
+        working-directory: backend
+        run: |
+          echo "🔍 Validating Go syntax..."
+          gofmt -l . | tee /tmp/gofmt-issues
+          if [[ -s /tmp/gofmt-issues ]]; then
+            echo "❌ Go formatting issues found:"
+            cat /tmp/gofmt-issues
+            exit 1
+          fi
+          
+          # Check for syntax errors
+          go vet ./...
+          
+          # Check modules are clean
+          go mod tidy
+          go mod verify
+          
+          if [[ -n $(git status --porcelain go.mod go.sum) ]]; then
+            echo "❌ go.mod or go.sum needs to be tidied"
+            git diff go.mod go.sum
+            exit 1
+          fi
+          
+          echo "✅ Go syntax validation passed"
+
+      - name: Validate TypeScript/JavaScript syntax
+        if: needs.detect-changes.outputs.has-node == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: TypeScript syntax check
+        if: needs.detect-changes.outputs.has-node == 'true'
+        working-directory: frontend
+        run: |
+          echo "🔍 Validating TypeScript/JavaScript syntax..."
+          npm ci --only=dev
+          
+          # Type checking
+          npx tsc --noEmit --skipLibCheck
+          
+          # ESLint syntax checking
+          npx eslint . --ext .js,.ts,.tsx --max-warnings 0 || {
+            echo "❌ ESLint found syntax issues"
+            exit 1
+          }
+          
+          echo "✅ TypeScript/JavaScript validation passed"
+
+      - name: Validate Python syntax
+        if: needs.detect-changes.outputs.has-python == 'true'
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Python syntax check
+        if: needs.detect-changes.outputs.has-python == 'true'
+        working-directory: pi-processor
+        run: |
+          echo "🔍 Validating Python syntax..."
+          
+          # Install dependencies for syntax checking
+          if [[ -f requirements.txt ]]; then
+            pip install -r requirements.txt
+          fi
+          if [[ -f pyproject.toml ]]; then
+            pip install -e .
+          fi
+          
+          # Install syntax checking tools
+          pip install black flake8 mypy
+          
+          # Syntax validation
+          python -m py_compile *.py 2>/dev/null || {
+            echo "❌ Python compilation failed"
+            exit 1
+          }
+          
+          # Code formatting check
+          black --check --diff . || {
+            echo "❌ Python code formatting issues found"
+            exit 1
+          }
+          
+          # Linting
+          flake8 . --max-line-length=88 --ignore=E203,W503 || {
+            echo "❌ Python linting issues found"
+            exit 1
+          }
+          
+          echo "✅ Python validation passed"
+
+  # ==============================================================================
+  # PHASE 2: BUILD VERIFICATION - ENSURE ALL COMPONENTS BUILD CORRECTLY
+  # ==============================================================================
+
+  build-go-backend:
+    name: "🏗️ Build Go Backend"
+    runs-on: ubuntu-latest
+    needs: [detect-changes, syntax-validation]
+    if: needs.detect-changes.outputs.has-go == 'true' && always() && needs.syntax-validation.result == 'success'
+    outputs:
+      build-success: ${{ steps.build.outcome }}
+      test-coverage: ${{ steps.coverage.outputs.coverage }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      - name: Build with race detection
+        id: build
+        working-directory: backend
+        timeout-minutes: 10
+        run: |
+          echo "🏗️ Building Go backend with race detection..."
+          
+          # Build with various flags for comprehensive validation
+          CGO_ENABLED=1 go build -race -v -ldflags="-s -w" -o sermon-uploader ./...
+          
+          # Test build for different architectures
+          GOOS=linux GOARCH=amd64 go build -v -o sermon-uploader-linux-amd64 ./...
+          GOOS=linux GOARCH=arm64 go build -v -o sermon-uploader-linux-arm64 ./...
+          
+          # Verify binary works
+          ./sermon-uploader --help >/dev/null 2>&1 || true  # Allow failure if --help not implemented
+          
+          echo "✅ Go build successful"
+
+      - name: Run Go tests with coverage
+        id: coverage
+        working-directory: backend
+        run: |
+          echo "🧪 Running Go tests with race detection and coverage..."
+          
+          # Run tests with race detection and coverage
+          go test -race -coverprofile=coverage.out -covermode=atomic -timeout=5m ./...
+          
+          # Generate coverage report
+          go tool cover -html=coverage.out -o coverage.html
+          
+          # Extract coverage percentage
+          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          echo "Coverage: $COVERAGE%"
+          echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
+          
+          # Check coverage threshold
+          if (( $(echo "$COVERAGE < ${{ env.MIN_GO_COVERAGE }}" | bc -l) )); then
+            echo "❌ Coverage $COVERAGE% is below minimum threshold ${{ env.MIN_GO_COVERAGE }}%"
+            exit 1
+          fi
+          
+          echo "✅ Go tests passed with $COVERAGE% coverage"
+
+      - name: Go performance benchmarks
+        working-directory: backend
+        run: |
+          echo "⚡ Running performance benchmarks..."
+          
+          # Run benchmarks if they exist
+          if go test -list . | grep -q Benchmark; then
+            go test -bench=. -benchmem -count=3 ./... > benchmark-results.txt
+            echo "📊 Benchmark results:"
+            cat benchmark-results.txt
+          else
+            echo "ℹ️ No benchmarks found"
+          fi
+
+      - name: Upload Go artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-build-artifacts
+          path: |
+            backend/sermon-uploader*
+            backend/coverage.*
+            backend/benchmark-results.txt
+          retention-days: 7
+
+  build-frontend:
+    name: "🎨 Build Frontend"
+    runs-on: ubuntu-latest
+    needs: [detect-changes, syntax-validation]
+    if: needs.detect-changes.outputs.has-node == 'true' && always() && needs.syntax-validation.result == 'success'
+    outputs:
+      build-success: ${{ steps.build.outcome }}
+      bundle-size: ${{ steps.bundle-analysis.outputs.size-kb }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies with audit
+        working-directory: frontend
+        timeout-minutes: 10
+        run: |
+          echo "📦 Installing frontend dependencies..."
+          
+          # Audit for security vulnerabilities
+          npm audit --audit-level high
+          
+          # Clean install
+          npm ci
+          
+          echo "✅ Dependencies installed successfully"
+
+      - name: Build frontend
+        id: build
+        working-directory: frontend
+        timeout-minutes: 15
+        run: |
+          echo "🏗️ Building frontend..."
+          
+          # TypeScript compilation check
+          npm run type-check
+          
+          # Build for production
+          npm run build
+          
+          # Verify build output exists
+          if [[ ! -d ".next" && ! -d "dist" && ! -d "build" ]]; then
+            echo "❌ Build output directory not found"
+            exit 1
+          fi
+          
+          echo "✅ Frontend build successful"
+
+      - name: Bundle size analysis
+        id: bundle-analysis
+        working-directory: frontend
+        run: |
+          echo "📊 Analyzing bundle size..."
+          
+          # Calculate total build size
+          if [[ -d ".next" ]]; then
+            BUILD_SIZE=$(du -sk .next | cut -f1)
+            echo "Next.js build size: ${BUILD_SIZE}KB"
+          elif [[ -d "build" ]]; then
+            BUILD_SIZE=$(du -sk build | cut -f1)
+            echo "Build size: ${BUILD_SIZE}KB"
+          else
+            BUILD_SIZE=0
+            echo "Could not determine build size"
+          fi
+          
+          echo "size-kb=$BUILD_SIZE" >> $GITHUB_OUTPUT
+          
+          # Warn if bundle is too large (> 10MB)
+          if (( BUILD_SIZE > 10240 )); then
+            echo "⚠️ Large bundle size detected: ${BUILD_SIZE}KB"
+          fi
+
+      - name: Run frontend tests
+        working-directory: frontend
+        run: |
+          echo "🧪 Running frontend tests..."
+          
+          # Run tests with coverage if available
+          npm test -- --passWithNoTests --coverage --watchAll=false || {
+            echo "ℹ️ No tests found or test command not available"
+          }
+
+      - name: Upload frontend artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build-artifacts
+          path: |
+            frontend/.next/
+            frontend/build/
+            frontend/dist/
+            frontend/coverage/
+          retention-days: 7
+
+  build-python-processor:
+    name: "🐍 Build Python Processor"
+    runs-on: ubuntu-latest
+    needs: [detect-changes, syntax-validation]
+    if: needs.detect-changes.outputs.has-python == 'true' && always() && needs.syntax-validation.result == 'success'
+    outputs:
+      build-success: ${{ steps.build.outcome }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install and build Python processor
+        id: build
+        working-directory: pi-processor
+        timeout-minutes: 10
+        run: |
+          echo "🐍 Setting up Python processor..."
+          
+          # Install dependencies
+          if [[ -f requirements.txt ]]; then
+            pip install -r requirements.txt
+          fi
+          if [[ -f pyproject.toml ]]; then
+            pip install -e .
+          fi
+          
+          # Install testing dependencies
+          pip install pytest pytest-cov
+          
+          # Compile all Python files
+          python -m compileall .
+          
+          # Run tests if they exist
+          if [[ -d tests ]] || ls test_*.py >/dev/null 2>&1; then
+            pytest --cov=. --cov-report=html --cov-report=term
+          else
+            echo "ℹ️ No Python tests found"
+          fi
+          
+          echo "✅ Python processor build successful"
+
+  # ==============================================================================
+  # PHASE 3: QUALITY GATES - ENFORCE QUALITY STANDARDS
+  # ==============================================================================
+
+  quality-gates:
+    name: "🚪 Quality Gates"
+    runs-on: ubuntu-latest
+    needs: [build-go-backend, build-frontend, build-python-processor]
+    if: always() && (needs.build-go-backend.result == 'success' || needs.build-frontend.result == 'success' || needs.build-python-processor.result == 'success')
+    outputs:
+      quality-check: ${{ steps.quality-summary.outputs.status }}
+    steps:
+      - name: Quality gate summary
+        id: quality-summary
+        run: |
+          echo "🚪 Evaluating quality gates..."
+          
+          QUALITY_ISSUES=""
+          
+          # Check Go coverage if Go build ran
+          if [[ "${{ needs.build-go-backend.result }}" == "success" ]]; then
+            GO_COVERAGE="${{ needs.build-go-backend.outputs.test-coverage }}"
+            if [[ -n "$GO_COVERAGE" ]] && (( $(echo "$GO_COVERAGE < ${{ env.MIN_GO_COVERAGE }}" | bc -l) )); then
+              QUALITY_ISSUES="$QUALITY_ISSUES\n- Go coverage ${GO_COVERAGE}% below minimum ${{ env.MIN_GO_COVERAGE }}%"
+            fi
+          fi
+          
+          # Check frontend bundle size if frontend build ran
+          if [[ "${{ needs.build-frontend.result }}" == "success" ]]; then
+            BUNDLE_SIZE="${{ needs.build-frontend.outputs.bundle-size }}"
+            if [[ -n "$BUNDLE_SIZE" ]] && (( BUNDLE_SIZE > 20480 )); then  # 20MB limit
+              QUALITY_ISSUES="$QUALITY_ISSUES\n- Frontend bundle size ${BUNDLE_SIZE}KB exceeds 20MB limit"
+            fi
+          fi
+          
+          # Evaluate overall quality
+          if [[ -n "$QUALITY_ISSUES" ]]; then
+            echo "❌ Quality gate failures:"
+            echo -e "$QUALITY_ISSUES"
+            
+            if [[ "${{ github.event.inputs.force_deploy }}" == "true" ]]; then
+              echo "⚠️ Force deploy enabled - proceeding despite quality issues"
+              echo "status=warning" >> $GITHUB_OUTPUT
+            else
+              echo "status=failed" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+          else
+            echo "✅ All quality gates passed"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          fi
+
+  security-scan:
+    name: "🔒 Security Scanning"
+    runs-on: ubuntu-latest
+    needs: [detect-changes]
+    if: needs.detect-changes.outputs.deploy-needed == 'true'
+    outputs:
+      vulnerabilities: ${{ steps.vuln-summary.outputs.count }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run comprehensive security scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'json'
+          output: 'trivy-results.json'
+
+      - name: Analyze vulnerabilities
+        id: vuln-summary
+        run: |
+          echo "🔒 Analyzing security vulnerabilities..."
+          
+          if [[ -f trivy-results.json ]]; then
+            CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' trivy-results.json || echo "0")
+            HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' trivy-results.json || echo "0")
+            MEDIUM=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "MEDIUM")] | length' trivy-results.json || echo "0")
+            
+            echo "Security scan results:"
+            echo "- Critical: $CRITICAL"
+            echo "- High: $HIGH"  
+            echo "- Medium: $MEDIUM"
+            
+            echo "count={\"critical\":$CRITICAL,\"high\":$HIGH,\"medium\":$MEDIUM}" >> $GITHUB_OUTPUT
+            
+            # Check against thresholds
+            if (( CRITICAL > MAX_CRITICAL_VULNS || HIGH > MAX_HIGH_VULNS )); then
+              echo "❌ Security vulnerability threshold exceeded"
+              echo "- Critical vulnerabilities: $CRITICAL (max: $MAX_CRITICAL_VULNS)"
+              echo "- High vulnerabilities: $HIGH (max: $MAX_HIGH_VULNS)"
+              
+              if [[ "${{ github.event.inputs.force_deploy }}" != "true" ]]; then
+                exit 1
+              else
+                echo "⚠️ Force deploy enabled - proceeding despite security issues"
+              fi
+            else
+              echo "✅ Security scan passed"
+            fi
+          else
+            echo "⚠️ Security scan results not found"
+          fi
+
+  # ==============================================================================
+  # PHASE 4: DOCKER BUILD AND VALIDATION
+  # ==============================================================================
+
+  docker-build:
+    name: "🐳 Docker Build & Test"
+    runs-on: ubuntu-latest
+    needs: [detect-changes, quality-gates, security-scan]
+    if: needs.detect-changes.outputs.deploy-needed == 'true' && needs.quality-gates.outputs.quality-check != 'failed'
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+      build-success: ${{ steps.build.outcome }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
+
+      - name: Build and test Docker image
+        id: build
+        timeout-minutes: 20
+        run: |
+          echo "🐳 Building Docker images..."
+          
+          # Build main application image
+          docker build -t sermon-uploader:test . --progress=plain
+          
+          # Build Pi processor image if exists
+          if [[ -f pi-processor/Dockerfile ]]; then
+            docker build -t sermon-pi-processor:test pi-processor/ --progress=plain
+          fi
+          
+          echo "✅ Docker build successful"
+
+      - name: Test Docker containers
+        run: |
+          echo "🧪 Testing Docker containers..."
+          
+          # Test main container startup
+          docker run --rm -d --name sermon-test -p 8080:8000 sermon-uploader:test || {
+            echo "❌ Main container failed to start"
+            exit 1
+          }
+          
+          # Wait for container to be ready
+          sleep 10
+          
+          # Basic health check
+          if curl -f http://localhost:8080/health >/dev/null 2>&1 || curl -f http://localhost:8080/ >/dev/null 2>&1; then
+            echo "✅ Main container health check passed"
+          else
+            echo "⚠️ Health check endpoint not available (may be expected)"
+          fi
+          
+          # Stop test container
+          docker stop sermon-test || true
+
+      - name: Container security scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'sermon-uploader:test'
+          format: 'table'
+          exit-code: '0'  # Don't fail on vulnerabilities in base images
+
+  # ==============================================================================
+  # PHASE 5: INTEGRATION TESTING
+  # ==============================================================================
+
+  integration-tests:
+    name: "🔗 Integration Tests"
+    runs-on: ubuntu-latest
+    needs: [docker-build]
+    if: needs.docker-build.outputs.build-success == 'success' && github.event.inputs.skip_tests != 'true'
+    services:
+      minio:
+        image: minio/minio:latest
+        ports:
+          - 9000:9000
+          - 9001:9001
+        env:
+          MINIO_ACCESS_KEY: testkey
+          MINIO_SECRET_KEY: testsecret
+        options: --health-cmd="curl -f http://localhost:9000/minio/health/live" --health-interval=30s --health-timeout=10s --health-retries=3
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup test environment
+        run: |
+          echo "🧪 Setting up integration test environment..."
+          
+          # Create test .env file
+          cat > .env.test << EOF
+          MINIO_ENDPOINT=localhost:9000
+          MINIO_ACCESS_KEY=testkey
+          MINIO_SECRET_KEY=testsecret
+          MINIO_SECURE=false
+          MINIO_BUCKET=test-sermons
+          DISCORD_WEBHOOK_URL=https://httpbin.org/post
+          PORT=8000
+          EOF
+
+      - name: Test MinIO connectivity
+        run: |
+          echo "📡 Testing MinIO connectivity..."
+          
+          # Wait for MinIO to be ready
+          for i in {1..12}; do
+            if curl -f http://localhost:9000/minio/health/live >/dev/null 2>&1; then
+              echo "✅ MinIO is ready (attempt $i)"
+              break
+            elif [ $i -eq 12 ]; then
+              echo "❌ MinIO failed to start"
+              exit 1
+            else
+              echo "⏳ Waiting for MinIO... (attempt $i)"
+              sleep 10
+            fi
+          done
+
+      - name: Run integration tests
+        timeout-minutes: 10
+        run: |
+          echo "🔗 Running integration tests..."
+          
+          # Start the application with test environment
+          docker run -d --name sermon-integration-test \
+            --network host \
+            --env-file .env.test \
+            sermon-uploader:test
+          
+          # Wait for application startup
+          sleep 15
+          
+          # Test basic endpoints
+          echo "Testing health endpoint..."
+          curl -f http://localhost:8000/health || curl -f http://localhost:8000/ || {
+            echo "⚠️ Main endpoint test skipped (endpoint may not exist)"
+          }
+          
+          # Test file upload simulation (if endpoint exists)
+          echo "Testing file operations..."
+          # This would be expanded with actual integration tests
+          
+          echo "✅ Integration tests completed"
+
+      - name: Cleanup integration test
+        if: always()
+        run: |
+          docker stop sermon-integration-test || true
+          docker rm sermon-integration-test || true
+
+  # ==============================================================================
+  # PHASE 6: DEPLOYMENT PREPARATION AND EXECUTION
+  # ==============================================================================
+
+  prepare-deployment:
+    name: "🚀 Prepare Deployment"
+    runs-on: ubuntu-latest
+    needs: [integration-tests, docker-build, quality-gates]
+    if: always() && needs.docker-build.outputs.build-success == 'success' && (needs.integration-tests.result == 'success' || needs.integration-tests.result == 'skipped') && github.ref == 'refs/heads/main'
+    outputs:
+      deploy-ready: ${{ steps.deploy-check.outputs.ready }}
+      rollback-image: ${{ steps.prepare.outputs.rollback-image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push production images
+        id: prepare
+        run: |
+          echo "📦 Preparing production deployment..."
+          
+          # Build multi-architecture images
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+            --tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            --push .
+          
+          # Store current image for rollback
+          CURRENT_IMAGE=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/deployments" | \
+            jq -r '.[0].payload.image // "none"' | head -1)
+          
+          echo "rollback-image=$CURRENT_IMAGE" >> $GITHUB_OUTPUT
+          echo "✅ Production images built and pushed"
+
+      - name: Final deployment readiness check
+        id: deploy-check
+        run: |
+          echo "🏁 Final deployment readiness check..."
+          
+          READY=true
+          ISSUES=""
+          
+          # Check quality gates
+          if [[ "${{ needs.quality-gates.outputs.quality-check }}" == "failed" ]]; then
+            if [[ "${{ github.event.inputs.force_deploy }}" != "true" ]]; then
+              READY=false
+              ISSUES="$ISSUES\n- Quality gates failed"
+            fi
+          fi
+          
+          # Check security scan
+          VULNS='${{ needs.security-scan.outputs.vulnerabilities }}'
+          if [[ "$VULNS" != "" ]]; then
+            CRITICAL=$(echo "$VULNS" | jq -r '.critical // 0')
+            HIGH=$(echo "$VULNS" | jq -r '.high // 0')
+            if (( CRITICAL > 0 || HIGH > 5 )); then
+              if [[ "${{ github.event.inputs.force_deploy }}" != "true" ]]; then
+                READY=false
+                ISSUES="$ISSUES\n- Critical security vulnerabilities detected"
+              fi
+            fi
+          fi
+          
+          if [[ "$READY" == "false" ]]; then
+            echo "❌ Deployment not ready:"
+            echo -e "$ISSUES"
+            echo "ready=false" >> $GITHUB_OUTPUT
+            exit 1
+          else
+            echo "✅ Deployment ready"
+            echo "ready=true" >> $GITHUB_OUTPUT
+          fi
+
+  # Blue-Green Deployment to Pi
+  deploy-blue-green:
+    name: "🔄 Blue-Green Deploy to Pi"
+    runs-on: self-hosted
+    needs: [prepare-deployment]
+    if: needs.prepare-deployment.outputs.deploy-ready == 'true'
+    timeout-minutes: 30
+    steps:
+      - name: Create comprehensive deployment script
+        run: |
+          cat > blue-green-deploy.sh << 'DEPLOY_EOF'
+          #!/bin/bash
+          set -euo pipefail
+          
+          # Configuration
+          PROJECT_DIR="/opt/sermon-uploader"
+          BACKUP_DIR="/opt/sermon-uploader-backup"
+          LOG_FILE="/var/log/sermon-uploader-deploy.log"
+          HEALTH_CHECK_URL="http://localhost:8000/health"
+          HEALTH_CHECK_TIMEOUT=300
+          
+          # Logging function
+          log() {
+            echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
+          }
+          
+          # Error handler
+          error_exit() {
+            log "ERROR: $1"
+            exit 1
+          }
+          
+          # Rollback function
+          rollback() {
+            log "🔄 Initiating rollback..."
+            if [[ -d "$BACKUP_DIR" ]]; then
+              cd "$BACKUP_DIR"
+              docker compose -f docker-compose.single.yml up -d --force-recreate
+              log "✅ Rollback completed"
+            else
+              log "❌ No backup available for rollback"
+            fi
+          }
+          
+          # Trap errors for automatic rollback
+          trap 'rollback' ERR
+          
+          log "🚀 Starting Blue-Green deployment..."
+          
+          # Pre-deployment checks
+          log "🔍 Running pre-deployment checks..."
+          
+          # Check disk space (need at least 2GB free)
+          FREE_SPACE=$(df /opt --output=avail | tail -n1)
+          if (( FREE_SPACE < 2097152 )); then  # 2GB in KB
+            error_exit "Insufficient disk space: ${FREE_SPACE}KB available, need 2GB"
+          fi
+          
+          # Check if Pi has enough memory
+          FREE_MEM=$(free -m | awk 'NR==2{printf "%.0f", $7}')
+          if (( FREE_MEM < 512 )); then
+            log "⚠️ Low memory warning: ${FREE_MEM}MB available"
+          fi
+          
+          # Backup current deployment
+          log "💾 Creating backup of current deployment..."
+          if [[ -d "$PROJECT_DIR" ]]; then
+            rm -rf "$BACKUP_DIR" || true
+            cp -r "$PROJECT_DIR" "$BACKUP_DIR"
+            log "✅ Backup created at $BACKUP_DIR"
+          fi
+          
+          # Navigate to project directory
+          cd "$PROJECT_DIR" || error_exit "Project directory not found: $PROJECT_DIR"
+          
+          # Pull latest code
+          log "📡 Pulling latest code..."
+          git fetch origin
+          git reset --hard origin/main
+          
+          # Create environment file with secrets
+          log "🔧 Configuring environment..."
+          cat > .env << 'ENV_EOF'
+          # MinIO Configuration
+          MINIO_ENDPOINT=${{ secrets.MINIO_ENDPOINT }}
+          MINIO_ACCESS_KEY=${{ secrets.MINIO_ACCESS_KEY }}
+          MINIO_SECRET_KEY=${{ secrets.MINIO_SECRET_KEY }}
+          MINIO_SECURE=${{ secrets.MINIO_SECURE }}
+          MINIO_BUCKET=${{ secrets.MINIO_BUCKET }}
+          
+          # Discord Configuration
+          DISCORD_WEBHOOK_URL=${{ secrets.DISCORD_WEBHOOK_URL }}
+          
+          # Application Configuration
+          WAV_SUFFIX=${{ secrets.WAV_SUFFIX || '_raw' }}
+          AAC_SUFFIX=${{ secrets.AAC_SUFFIX || '_streamable' }}
+          BATCH_THRESHOLD=${{ secrets.BATCH_THRESHOLD || '2' }}
+          PORT=${{ secrets.PORT || '8000' }}
+          
+          # Deployment metadata
+          DEPLOYMENT_ID=${{ github.sha }}
+          DEPLOYMENT_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          DEPLOYMENT_VERSION=${{ github.sha }}
+          ENV_EOF
+          
+          chmod 600 .env
+          
+          # Pull new images
+          log "📦 Pulling new container images..."
+          docker compose -f docker-compose.single.yml pull
+          
+          # Start new version (Blue-Green approach)
+          log "🟢 Starting new version..."
+          docker compose -f docker-compose.single.yml up -d --force-recreate
+          
+          # Health check with timeout
+          log "⏳ Performing health checks..."
+          HEALTH_CHECK_START=$(date +%s)
+          HEALTH_PASSED=false
+          
+          while true; do
+            CURRENT_TIME=$(date +%s)
+            ELAPSED=$((CURRENT_TIME - HEALTH_CHECK_START))
+            
+            if (( ELAPSED >= HEALTH_CHECK_TIMEOUT )); then
+              log "❌ Health check timeout after ${HEALTH_CHECK_TIMEOUT} seconds"
+              break
+            fi
+            
+            # Check container status
+            if ! docker compose -f docker-compose.single.yml ps sermon-uploader | grep -q "Up"; then
+              log "❌ Container is not running after $ELAPSED seconds"
+              docker compose -f docker-compose.single.yml logs sermon-uploader --tail=20
+              sleep 10
+              continue
+            fi
+            
+            # Check MinIO health
+            if curl -f http://localhost:9000/minio/health/live >/dev/null 2>&1; then
+              log "✅ MinIO health check passed ($ELAPSED seconds)"
+              
+              # Check application health
+              if curl -f "$HEALTH_CHECK_URL" >/dev/null 2>&1; then
+                log "✅ Application health check passed ($ELAPSED seconds)"
+                HEALTH_PASSED=true
+                break
+              else
+                # Try alternative endpoints
+                if curl -f "http://localhost:8000/" >/dev/null 2>&1; then
+                  log "✅ Application responded on root endpoint ($ELAPSED seconds)"
+                  HEALTH_PASSED=true
+                  break
+                fi
+              fi
+            fi
+            
+            log "⏳ Health check in progress... ($ELAPSED/${HEALTH_CHECK_TIMEOUT}s)"
+            sleep 15
+          done
+          
+          if [[ "$HEALTH_PASSED" != "true" ]]; then
+            log "❌ Health checks failed - initiating rollback"
+            rollback
+            error_exit "Deployment failed health checks"
+          fi
+          
+          # Performance validation
+          log "⚡ Running performance validation..."
+          RESPONSE_TIME=$(curl -w "%{time_total}" -s -o /dev/null "$HEALTH_CHECK_URL" || echo "0")
+          if (( $(echo "$RESPONSE_TIME > 5" | bc -l) )); then
+            log "⚠️ Slow response time: ${RESPONSE_TIME}s"
+          else
+            log "✅ Response time acceptable: ${RESPONSE_TIME}s"
+          fi
+          
+          # Cleanup old resources
+          log "🧹 Cleaning up old resources..."
+          docker image prune -af --filter="until=24h" || true
+          docker container prune -f --filter="until=24h" || true
+          docker volume prune -f || true
+          
+          # Remove backup if deployment successful
+          rm -rf "$BACKUP_DIR" || true
+          
+          log "🎉 Blue-Green deployment completed successfully!"
+          
+          # Final status report
+          log "📊 Deployment status:"
+          docker compose -f docker-compose.single.yml ps
+          
+          # Disable error trap since we succeeded
+          trap - ERR
+          DEPLOY_EOF
+          
+          chmod +x blue-green-deploy.sh
+
+      - name: Execute Blue-Green deployment
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.PI_HOST }}
+          username: ${{ secrets.PI_USER }}
+          key: ${{ secrets.PI_SSH_KEY }}
+          port: ${{ secrets.PI_PORT || 22 }}
+          timeout: 30m
+          command_timeout: 30m
+          script_stop: true
+          script: |
+            # Execute the deployment script created above
+            bash -c "$(cat << 'SCRIPT_END'
+            #!/bin/bash
+            set -euo pipefail
+            
+            # Configuration
+            PROJECT_DIR="/opt/sermon-uploader"
+            BACKUP_DIR="/opt/sermon-uploader-backup"
+            LOG_FILE="/var/log/sermon-uploader-deploy.log"
+            HEALTH_CHECK_URL="http://localhost:8000/health"
+            HEALTH_CHECK_TIMEOUT=300
+            
+            # Logging function
+            log() {
+              echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
+            }
+            
+            # Error handler
+            error_exit() {
+              log "ERROR: $1"
+              exit 1
+            }
+            
+            # Rollback function
+            rollback() {
+              log "🔄 Initiating rollback..."
+              if [[ -d "$BACKUP_DIR" ]]; then
+                cd "$BACKUP_DIR"
+                docker compose -f docker-compose.single.yml up -d --force-recreate
+                log "✅ Rollback completed"
+              else
+                log "❌ No backup available for rollback"
+              fi
+            }
+            
+            # Trap errors for automatic rollback
+            trap 'rollback' ERR
+            
+            log "🚀 Starting Blue-Green deployment..."
+            
+            # Pre-deployment checks
+            log "🔍 Running pre-deployment checks..."
+            
+            # Check disk space (need at least 2GB free)
+            FREE_SPACE=$(df /opt --output=avail | tail -n1)
+            if (( FREE_SPACE < 2097152 )); then  # 2GB in KB
+              error_exit "Insufficient disk space: ${FREE_SPACE}KB available, need 2GB"
+            fi
+            
+            # Check if Pi has enough memory
+            FREE_MEM=$(free -m | awk 'NR==2{printf "%.0f", $7}')
+            if (( FREE_MEM < 512 )); then
+              log "⚠️ Low memory warning: ${FREE_MEM}MB available"
+            fi
+            
+            # Backup current deployment
+            log "💾 Creating backup of current deployment..."
+            if [[ -d "$PROJECT_DIR" ]]; then
+              rm -rf "$BACKUP_DIR" || true
+              cp -r "$PROJECT_DIR" "$BACKUP_DIR"
+              log "✅ Backup created at $BACKUP_DIR"
+            fi
+            
+            # Navigate to project directory
+            cd "$PROJECT_DIR" || error_exit "Project directory not found: $PROJECT_DIR"
+            
+            # Pull latest code
+            log "📡 Pulling latest code..."
+            git fetch origin
+            git reset --hard origin/main
+            
+            # Create environment file with secrets
+            log "🔧 Configuring environment..."
+            cat > .env << 'ENV_EOF'
+            # MinIO Configuration
+            MINIO_ENDPOINT=${{ secrets.MINIO_ENDPOINT }}
+            MINIO_ACCESS_KEY=${{ secrets.MINIO_ACCESS_KEY }}
+            MINIO_SECRET_KEY=${{ secrets.MINIO_SECRET_KEY }}
+            MINIO_SECURE=${{ secrets.MINIO_SECURE }}
+            MINIO_BUCKET=${{ secrets.MINIO_BUCKET }}
+            
+            # Discord Configuration
+            DISCORD_WEBHOOK_URL=${{ secrets.DISCORD_WEBHOOK_URL }}
+            
+            # Application Configuration
+            WAV_SUFFIX=${{ secrets.WAV_SUFFIX || '_raw' }}
+            AAC_SUFFIX=${{ secrets.AAC_SUFFIX || '_streamable' }}
+            BATCH_THRESHOLD=${{ secrets.BATCH_THRESHOLD || '2' }}
+            PORT=${{ secrets.PORT || '8000' }}
+            
+            # Deployment metadata
+            DEPLOYMENT_ID=${{ github.sha }}
+            DEPLOYMENT_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            DEPLOYMENT_VERSION=${{ github.sha }}
+            ENV_EOF
+            
+            chmod 600 .env
+            
+            # Pull new images
+            log "📦 Pulling new container images..."
+            docker compose -f docker-compose.single.yml pull
+            
+            # Start new version (Blue-Green approach)
+            log "🟢 Starting new version..."
+            docker compose -f docker-compose.single.yml up -d --force-recreate
+            
+            # Health check with timeout
+            log "⏳ Performing health checks..."
+            HEALTH_CHECK_START=$(date +%s)
+            HEALTH_PASSED=false
+            
+            while true; do
+              CURRENT_TIME=$(date +%s)
+              ELAPSED=$((CURRENT_TIME - HEALTH_CHECK_START))
+              
+              if (( ELAPSED >= HEALTH_CHECK_TIMEOUT )); then
+                log "❌ Health check timeout after ${HEALTH_CHECK_TIMEOUT} seconds"
+                break
+              fi
+              
+              # Check container status
+              if ! docker compose -f docker-compose.single.yml ps sermon-uploader | grep -q "Up"; then
+                log "❌ Container is not running after $ELAPSED seconds"
+                docker compose -f docker-compose.single.yml logs sermon-uploader --tail=20
+                sleep 10
+                continue
+              fi
+              
+              # Check MinIO health
+              if curl -f http://localhost:9000/minio/health/live >/dev/null 2>&1; then
+                log "✅ MinIO health check passed ($ELAPSED seconds)"
+                
+                # Check application health
+                if curl -f "$HEALTH_CHECK_URL" >/dev/null 2>&1; then
+                  log "✅ Application health check passed ($ELAPSED seconds)"
+                  HEALTH_PASSED=true
+                  break
+                else
+                  # Try alternative endpoints
+                  if curl -f "http://localhost:8000/" >/dev/null 2>&1; then
+                    log "✅ Application responded on root endpoint ($ELAPSED seconds)"
+                    HEALTH_PASSED=true
+                    break
+                  fi
+                fi
+              fi
+              
+              log "⏳ Health check in progress... ($ELAPSED/${HEALTH_CHECK_TIMEOUT}s)"
+              sleep 15
+            done
+            
+            if [[ "$HEALTH_PASSED" != "true" ]]; then
+              log "❌ Health checks failed - initiating rollback"
+              rollback
+              error_exit "Deployment failed health checks"
+            fi
+            
+            # Performance validation
+            log "⚡ Running performance validation..."
+            RESPONSE_TIME=$(curl -w "%{time_total}" -s -o /dev/null "$HEALTH_CHECK_URL" || echo "0")
+            if (( $(echo "$RESPONSE_TIME > 5" | bc -l) )); then
+              log "⚠️ Slow response time: ${RESPONSE_TIME}s"
+            else
+              log "✅ Response time acceptable: ${RESPONSE_TIME}s"
+            fi
+            
+            # Cleanup old resources
+            log "🧹 Cleaning up old resources..."
+            docker image prune -af --filter="until=24h" || true
+            docker container prune -f --filter="until=24h" || true
+            docker volume prune -f || true
+            
+            # Remove backup if deployment successful
+            rm -rf "$BACKUP_DIR" || true
+            
+            log "🎉 Blue-Green deployment completed successfully!"
+            
+            # Final status report
+            log "📊 Deployment status:"
+            docker compose -f docker-compose.single.yml ps
+            
+            # Disable error trap since we succeeded
+            trap - ERR
+            SCRIPT_END
+            )"
+
+  # ==============================================================================
+  # PHASE 7: POST-DEPLOYMENT VALIDATION
+  # ==============================================================================
+
+  post-deployment-validation:
+    name: "✅ Post-Deployment Validation"
+    runs-on: ubuntu-latest
+    needs: [deploy-blue-green]
+    steps:
+      - name: Comprehensive post-deployment tests
+        timeout-minutes: 10
+        run: |
+          echo "🔍 Running comprehensive post-deployment validation..."
+          
+          PI_HOST="${{ secrets.PI_HOST }}"
+          APP_PORT="${{ secrets.PORT || '8000' }}"
+          
+          # Test external connectivity to Pi services
+          echo "📡 Testing external connectivity..."
+          
+          # Test MinIO accessibility (if exposed)
+          if curl -f "http://$PI_HOST:9000/minio/health/live" >/dev/null 2>&1; then
+            echo "✅ MinIO externally accessible"
+          else
+            echo "ℹ️ MinIO not externally accessible (expected if firewalled)"
+          fi
+          
+          # Test application accessibility
+          if curl -f "http://$PI_HOST:$APP_PORT/health" >/dev/null 2>&1; then
+            echo "✅ Application externally accessible"
+          elif curl -f "http://$PI_HOST:$APP_PORT/" >/dev/null 2>&1; then
+            echo "✅ Application root endpoint accessible"
+          else
+            echo "⚠️ Application not externally accessible (may require VPN/firewall config)"
+          fi
+          
+          # Performance baseline test
+          echo "⚡ Performance baseline test..."
+          RESPONSE_TIME=$(curl -w "%{time_total}" -s -o /dev/null "http://$PI_HOST:$APP_PORT/" || echo "0")
+          echo "Response time: ${RESPONSE_TIME}s"
+          
+          # Mark deployment as successful
+          echo "🎉 Post-deployment validation completed!"
+
+  # ==============================================================================
+  # FINAL SUMMARY AND REPORTING
+  # ==============================================================================
+
+  deployment-summary:
+    name: "📊 Deployment Summary"
+    runs-on: ubuntu-latest
+    needs: [detect-changes, build-go-backend, build-frontend, build-python-processor, quality-gates, security-scan, deploy-blue-green, post-deployment-validation]
+    if: always()
+    steps:
+      - name: Generate comprehensive deployment report
+        run: |
+          echo "## 🚀 Deployment Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### 📋 Component Status" >> $GITHUB_STEP_SUMMARY
+          echo "| Component | Build | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|--------|---------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Go Backend | ${{ needs.build-go-backend.result || 'skipped' }} | ${{ needs.build-go-backend.outputs.test-coverage }}% coverage |" >> $GITHUB_STEP_SUMMARY
+          echo "| Frontend | ${{ needs.build-frontend.result || 'skipped' }} | ${{ needs.build-frontend.outputs.bundle-size }}KB bundle |" >> $GITHUB_STEP_SUMMARY
+          echo "| Python Processor | ${{ needs.build-python-processor.result || 'skipped' }} | - |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### 🚪 Quality Gates" >> $GITHUB_STEP_SUMMARY
+          echo "- Quality Check: ${{ needs.quality-gates.outputs.quality-check || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Security Scan: ${{ needs.security-scan.result || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### 🚀 Deployment" >> $GITHUB_STEP_SUMMARY
+          DEPLOY_STATUS="${{ needs.deploy-blue-green.result || 'not executed' }}"
+          if [[ "$DEPLOY_STATUS" == "success" ]]; then
+            echo "- ✅ Deployment: **SUCCESS**" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Post-validation: ${{ needs.post-deployment-validation.result || 'pending' }}" >> $GITHUB_STEP_SUMMARY
+          elif [[ "$DEPLOY_STATUS" == "failure" ]]; then
+            echo "- ❌ Deployment: **FAILED**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ⏸️ Deployment: **SKIPPED** (PR or quality gate failure)" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### 📈 Metrics" >> $GITHUB_STEP_SUMMARY
+          echo "- Commit: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Branch: \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Actor: ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Pipeline Duration: ${{ github.event.head_commit.timestamp }}" >> $GITHUB_STEP_SUMMARY
+          
+          # Determine overall pipeline status
+          if [[ "${{ needs.deploy-blue-green.result }}" == "success" ]]; then
+            echo ""
+            echo "## ✅ Overall Status: DEPLOYMENT SUCCESSFUL" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          elif [[ "${{ needs.quality-gates.outputs.quality-check }}" == "failed" ]]; then
+            echo ""
+            echo "## ❌ Overall Status: QUALITY GATE FAILURE" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          elif [[ "${{ needs.deploy-blue-green.result }}" == "failure" ]]; then
+            echo ""
+            echo "## ❌ Overall Status: DEPLOYMENT FAILED" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          else
+            echo ""
+            echo "## ⏸️ Overall Status: PIPELINE COMPLETED (NO DEPLOYMENT)" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi

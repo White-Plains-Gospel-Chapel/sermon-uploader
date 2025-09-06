@@ -1,0 +1,594 @@
+name: Emergency Rollback System
+
+# This workflow provides comprehensive rollback capabilities for critical failures
+# Can be triggered manually or automatically when health checks detect issues
+
+on:
+  workflow_dispatch:
+    inputs:
+      rollback_reason:
+        description: 'Reason for rollback (required)'
+        required: true
+        type: choice
+        options:
+          - 'health_check_failure'
+          - 'performance_degradation'
+          - 'security_incident'
+          - 'data_corruption'
+          - 'service_unavailable'
+          - 'manual_intervention'
+          - 'other'
+      rollback_target:
+        description: 'Rollback target (leave empty for last known good)'
+        required: false
+        type: string
+      emergency_mode:
+        description: 'Emergency mode (skips some safety checks)'
+        required: false
+        default: false
+        type: boolean
+      notify_team:
+        description: 'Send emergency notification to team'
+        required: false
+        default: true
+        type: boolean
+  
+  # Automatic trigger from monitoring (requires webhook setup)
+  repository_dispatch:
+    types: [emergency-rollback]
+
+# High priority - cancel any running deployments
+concurrency:
+  group: emergency-rollback
+  cancel-in-progress: true
+
+env:
+  PROJECT_DIR: "/opt/sermon-uploader"
+  BACKUP_DIR: "/opt/sermon-uploader-backup"
+  ROLLBACK_LOG: "/var/log/emergency-rollback.log"
+  MAX_ROLLBACK_TIME: 300  # 5 minutes maximum rollback time
+
+jobs:
+  # ==============================================================================
+  # PHASE 1: EMERGENCY ASSESSMENT AND PREPARATION
+  # ==============================================================================
+
+  emergency-assessment:
+    name: "🚨 Emergency Assessment"
+    runs-on: ubuntu-latest
+    outputs:
+      severity-level: ${{ steps.assess.outputs.severity }}
+      rollback-strategy: ${{ steps.assess.outputs.strategy }}
+      estimated-downtime: ${{ steps.assess.outputs.downtime }}
+    steps:
+      - name: Assess emergency severity
+        id: assess
+        run: |
+          echo "🚨 Assessing emergency severity..."
+          
+          REASON="${{ github.event.inputs.rollback_reason || github.event.client_payload.reason || 'unknown' }}"
+          EMERGENCY_MODE="${{ github.event.inputs.emergency_mode || github.event.client_payload.emergency || false }}"
+          
+          # Determine severity level
+          case "$REASON" in
+            "security_incident"|"data_corruption")
+              SEVERITY="critical"
+              STRATEGY="immediate"
+              DOWNTIME="2-5"
+              ;;
+            "service_unavailable"|"health_check_failure")
+              SEVERITY="high"
+              STRATEGY="fast"
+              DOWNTIME="1-3"
+              ;;
+            "performance_degradation")
+              SEVERITY="medium"
+              STRATEGY="graceful"
+              DOWNTIME="0-1"
+              ;;
+            *)
+              SEVERITY="low"
+              STRATEGY="standard"
+              DOWNTIME="0-1"
+              ;;
+          esac
+          
+          if [[ "$EMERGENCY_MODE" == "true" ]]; then
+            SEVERITY="critical"
+            STRATEGY="immediate"
+          fi
+          
+          echo "Severity: $SEVERITY"
+          echo "Strategy: $STRATEGY"
+          echo "Estimated downtime: $DOWNTIME minutes"
+          
+          echo "severity=$SEVERITY" >> $GITHUB_OUTPUT
+          echo "strategy=$STRATEGY" >> $GITHUB_OUTPUT
+          echo "downtime=$DOWNTIME" >> $GITHUB_OUTPUT
+
+      - name: Validate rollback prerequisites
+        run: |
+          echo "✅ Validating rollback prerequisites..."
+          
+          # Check if we have required secrets
+          REQUIRED_SECRETS=("PI_HOST" "PI_USER" "PI_SSH_KEY")
+          for secret in "${REQUIRED_SECRETS[@]}"; do
+            if [[ -z "${!secret}" ]]; then
+              echo "❌ Missing required secret: $secret"
+              exit 1
+            fi
+          done
+          
+          echo "✅ All prerequisites validated"
+        env:
+          PI_HOST: ${{ secrets.PI_HOST }}
+          PI_USER: ${{ secrets.PI_USER }}
+          PI_SSH_KEY: ${{ secrets.PI_SSH_KEY }}
+
+  # ==============================================================================
+  # PHASE 2: EMERGENCY COMMUNICATION
+  # ==============================================================================
+
+  emergency-notification:
+    name: "📢 Emergency Notification"
+    runs-on: ubuntu-latest
+    needs: emergency-assessment
+    if: github.event.inputs.notify_team != 'false'
+    steps:
+      - name: Send emergency alert
+        run: |
+          echo "📢 Sending emergency rollback notification..."
+          
+          REASON="${{ github.event.inputs.rollback_reason || github.event.client_payload.reason || 'unknown' }}"
+          SEVERITY="${{ needs.emergency-assessment.outputs.severity-level }}"
+          STRATEGY="${{ needs.emergency-assessment.outputs.rollback-strategy }}"
+          DOWNTIME="${{ needs.emergency-assessment.outputs.estimated-downtime }}"
+          
+          # Determine alert color based on severity
+          case "$SEVERITY" in
+            "critical") COLOR="16711680" ;; # Red
+            "high") COLOR="16753920" ;;     # Orange  
+            "medium") COLOR="16776960" ;;   # Yellow
+            *) COLOR="8421504" ;;           # Gray
+          esac
+          
+          # Send Discord notification if webhook available
+          if [[ -n "${{ secrets.DISCORD_WEBHOOK_URL }}" ]]; then
+            curl -X POST "${{ secrets.DISCORD_WEBHOOK_URL }}" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"embeds\": [{
+                  \"title\": \"🚨 EMERGENCY ROLLBACK INITIATED\",
+                  \"description\": \"**Reason:** $REASON\n**Severity:** $SEVERITY\n**Strategy:** $STRATEGY\n**Expected Downtime:** $DOWNTIME minutes\",
+                  \"color\": $COLOR,
+                  \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",
+                  \"fields\": [
+                    {\"name\": \"Repository\", \"value\": \"${{ github.repository }}\", \"inline\": true},
+                    {\"name\": \"Triggered By\", \"value\": \"${{ github.actor }}\", \"inline\": true},
+                    {\"name\": \"Workflow\", \"value\": \"[View Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\", \"inline\": false}
+                  ],
+                  \"footer\": {
+                    \"text\": \"Emergency Rollback System\"
+                  }
+                }]
+              }" || echo "Discord notification failed"
+          fi
+          
+          echo "📢 Emergency notification sent"
+
+  # ==============================================================================
+  # PHASE 3: SYSTEM STATE CAPTURE
+  # ==============================================================================
+
+  capture-current-state:
+    name: "📸 Capture Current State"
+    runs-on: self-hosted
+    needs: emergency-assessment
+    outputs:
+      state-captured: ${{ steps.capture.outputs.success }}
+      backup-location: ${{ steps.capture.outputs.backup-path }}
+    steps:
+      - name: Capture system state
+        id: capture
+        timeout-minutes: 5
+        run: |
+          echo "📸 Capturing current system state for forensics..."
+          
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          STATE_DIR="/opt/emergency-state-${TIMESTAMP}"
+          
+          mkdir -p "$STATE_DIR"
+          
+          # Capture system information
+          echo "=== System State Capture: $TIMESTAMP ===" > "$STATE_DIR/system-info.txt"
+          
+          # Memory and CPU state
+          echo "--- Memory Usage ---" >> "$STATE_DIR/system-info.txt"
+          free -h >> "$STATE_DIR/system-info.txt"
+          
+          echo "--- CPU Usage ---" >> "$STATE_DIR/system-info.txt"
+          top -b -n1 | head -20 >> "$STATE_DIR/system-info.txt"
+          
+          # Disk usage
+          echo "--- Disk Usage ---" >> "$STATE_DIR/system-info.txt"
+          df -h >> "$STATE_DIR/system-info.txt"
+          
+          # Network connections
+          echo "--- Active Connections ---" >> "$STATE_DIR/system-info.txt"
+          ss -tuln >> "$STATE_DIR/system-info.txt" || netstat -tuln >> "$STATE_DIR/system-info.txt"
+          
+          # Docker state
+          if command -v docker >/dev/null; then
+            echo "--- Docker Containers ---" >> "$STATE_DIR/system-info.txt"
+            docker ps -a >> "$STATE_DIR/system-info.txt"
+            
+            echo "--- Docker Logs (last 100 lines) ---" >> "$STATE_DIR/system-info.txt"
+            docker logs sermon-uploader --tail=100 >> "$STATE_DIR/system-info.txt" 2>&1 || echo "No logs available" >> "$STATE_DIR/system-info.txt"
+          fi
+          
+          # Application logs
+          if [[ -d "/opt/sermon-uploader" ]]; then
+            echo "--- Application State ---" >> "$STATE_DIR/system-info.txt"
+            ls -la /opt/sermon-uploader >> "$STATE_DIR/system-info.txt"
+            
+            # Copy important config files
+            cp /opt/sermon-uploader/.env "$STATE_DIR/env-backup" 2>/dev/null || echo "No .env file found"
+            cp /opt/sermon-uploader/docker-compose*.yml "$STATE_DIR/" 2>/dev/null || true
+          fi
+          
+          # System logs
+          echo "--- System Logs (last 50 lines) ---" >> "$STATE_DIR/system-info.txt"
+          journalctl --since="1 hour ago" --no-pager --lines=50 >> "$STATE_DIR/system-info.txt" 2>/dev/null || echo "No journal logs available"
+          
+          echo "success=true" >> $GITHUB_OUTPUT
+          echo "backup-path=$STATE_DIR" >> $GITHUB_OUTPUT
+          
+          echo "✅ System state captured to $STATE_DIR"
+
+  # ==============================================================================
+  # PHASE 4: EMERGENCY ROLLBACK EXECUTION
+  # ==============================================================================
+
+  execute-rollback:
+    name: "🔄 Execute Emergency Rollback"
+    runs-on: self-hosted
+    needs: [emergency-assessment, capture-current-state]
+    timeout-minutes: 15
+    outputs:
+      rollback-success: ${{ steps.rollback.outputs.success }}
+      rollback-version: ${{ steps.rollback.outputs.version }}
+    steps:
+      - name: Execute emergency rollback
+        id: rollback
+        run: |
+          echo "🔄 Executing emergency rollback..."
+          
+          ROLLBACK_TARGET="${{ github.event.inputs.rollback_target || 'latest-backup' }}"
+          STRATEGY="${{ needs.emergency-assessment.outputs.rollback-strategy }}"
+          EMERGENCY_MODE="${{ github.event.inputs.emergency_mode || false }}"
+          
+          # Log rollback start
+          echo "[$(date +'%Y-%m-%d %H:%M:%S')] Emergency rollback started - Strategy: $STRATEGY, Target: $ROLLBACK_TARGET" | tee -a "$ROLLBACK_LOG"
+          
+          cd "$PROJECT_DIR" || {
+            echo "❌ Cannot access project directory: $PROJECT_DIR"
+            exit 1
+          }
+          
+          case "$STRATEGY" in
+            "immediate")
+              echo "🚨 IMMEDIATE ROLLBACK - Stopping all services..."
+              
+              # Stop everything immediately
+              docker compose down --remove-orphans || true
+              docker stop $(docker ps -q) || true
+              
+              # Restore from backup if available
+              if [[ -d "$BACKUP_DIR" && "$ROLLBACK_TARGET" == "latest-backup" ]]; then
+                echo "Restoring from backup..."
+                cd "$BACKUP_DIR"
+                docker compose -f docker-compose.single.yml up -d --force-recreate
+                ROLLBACK_VERSION="backup-$(date +%Y%m%d)"
+              else
+                echo "❌ No backup available for immediate rollback"
+                exit 1
+              fi
+              ;;
+              
+            "fast")
+              echo "⚡ FAST ROLLBACK - Quick service replacement..."
+              
+              # Fast rollback with minimal checks
+              if [[ -d "$BACKUP_DIR" ]]; then
+                cd "$BACKUP_DIR"
+                docker compose -f docker-compose.single.yml pull || echo "Pull failed, using local images"
+                docker compose -f docker-compose.single.yml up -d --force-recreate
+                ROLLBACK_VERSION="backup-$(date +%Y%m%d)"
+              else
+                # Rollback to specific image if target provided
+                if [[ "$ROLLBACK_TARGET" != "latest-backup" ]]; then
+                  echo "Rolling back to specific version: $ROLLBACK_TARGET"
+                  # Update docker-compose to use specific image
+                  sed -i.bak "s|image: .*|image: ghcr.io/white-plains-gospel-chapel/sermon-uploader:$ROLLBACK_TARGET|g" docker-compose.single.yml
+                  docker compose -f docker-compose.single.yml up -d --force-recreate
+                  ROLLBACK_VERSION="$ROLLBACK_TARGET"
+                else
+                  echo "❌ No backup or target specified for rollback"
+                  exit 1
+                fi
+              fi
+              ;;
+              
+            "graceful"|"standard")
+              echo "🔄 GRACEFUL ROLLBACK - Safe service transition..."
+              
+              # Graceful rollback with health checks
+              if [[ -d "$BACKUP_DIR" ]]; then
+                echo "Testing backup configuration..."
+                cd "$BACKUP_DIR"
+                
+                # Validate backup before using it
+                if [[ -f "docker-compose.single.yml" ]]; then
+                  docker compose -f docker-compose.single.yml config >/dev/null || {
+                    echo "❌ Backup configuration is invalid"
+                    exit 1
+                  }
+                  
+                  echo "Starting services from backup..."
+                  docker compose -f docker-compose.single.yml up -d
+                  ROLLBACK_VERSION="backup-$(date +%Y%m%d)"
+                else
+                  echo "❌ No valid backup configuration found"
+                  exit 1
+                fi
+              else
+                echo "❌ No backup directory found"
+                exit 1
+              fi
+              ;;
+              
+            *)
+              echo "❌ Unknown rollback strategy: $STRATEGY"
+              exit 1
+              ;;
+          esac
+          
+          echo "success=true" >> $GITHUB_OUTPUT
+          echo "version=$ROLLBACK_VERSION" >> $GITHUB_OUTPUT
+          
+          echo "✅ Rollback execution completed"
+
+  # ==============================================================================
+  # PHASE 5: ROLLBACK VERIFICATION
+  # ==============================================================================
+
+  verify-rollback:
+    name: "✅ Verify Rollback"
+    runs-on: ubuntu-latest
+    needs: [execute-rollback, emergency-assessment]
+    if: needs.execute-rollback.outputs.rollback-success == 'true'
+    timeout-minutes: 10
+    outputs:
+      verification-passed: ${{ steps.verify.outputs.success }}
+    steps:
+      - name: Comprehensive rollback verification
+        id: verify
+        run: |
+          echo "✅ Verifying rollback success..."
+          
+          PI_HOST="${{ secrets.PI_HOST }}"
+          APP_PORT="${{ secrets.PORT || '8000' }}"
+          VERIFICATION_TIMEOUT=300  # 5 minutes
+          
+          echo "Testing service availability..."
+          
+          START_TIME=$(date +%s)
+          VERIFICATION_PASSED=false
+          
+          while true; do
+            CURRENT_TIME=$(date +%s)
+            ELAPSED=$((CURRENT_TIME - START_TIME))
+            
+            if (( ELAPSED >= VERIFICATION_TIMEOUT )); then
+              echo "❌ Verification timeout after ${VERIFICATION_TIMEOUT} seconds"
+              break
+            fi
+            
+            # Test MinIO health
+            if curl -f -m 10 "http://$PI_HOST:9000/minio/health/live" >/dev/null 2>&1; then
+              echo "✅ MinIO is responding ($ELAPSED seconds)"
+              
+              # Test application health
+              if curl -f -m 10 "http://$PI_HOST:$APP_PORT/health" >/dev/null 2>&1; then
+                echo "✅ Application health check passed ($ELAPSED seconds)"
+                VERIFICATION_PASSED=true
+                break
+              elif curl -f -m 10 "http://$PI_HOST:$APP_PORT/" >/dev/null 2>&1; then
+                echo "✅ Application root endpoint responding ($ELAPSED seconds)"
+                VERIFICATION_PASSED=true
+                break
+              fi
+            fi
+            
+            echo "⏳ Verification in progress... ($ELAPSED/${VERIFICATION_TIMEOUT}s)"
+            sleep 15
+          done
+          
+          if [[ "$VERIFICATION_PASSED" == "true" ]]; then
+            echo "✅ Rollback verification successful"
+            echo "success=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Rollback verification failed"
+            echo "success=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      - name: Performance validation
+        run: |
+          echo "⚡ Validating post-rollback performance..."
+          
+          PI_HOST="${{ secrets.PI_HOST }}"
+          APP_PORT="${{ secrets.PORT || '8000' }}"
+          
+          # Test response times
+          for i in {1..3}; do
+            RESPONSE_TIME=$(curl -w "%{time_total}" -s -o /dev/null -m 10 "http://$PI_HOST:$APP_PORT/" || echo "timeout")
+            echo "Response test $i: ${RESPONSE_TIME}s"
+            
+            if [[ "$RESPONSE_TIME" != "timeout" ]] && (( $(echo "$RESPONSE_TIME < 10" | bc -l) )); then
+              echo "✅ Response time acceptable: ${RESPONSE_TIME}s"
+            else
+              echo "⚠️ Slow or failed response: $RESPONSE_TIME"
+            fi
+            
+            sleep 5
+          done
+
+  # ==============================================================================
+  # PHASE 6: POST-ROLLBACK ACTIONS
+  # ==============================================================================
+
+  post-rollback-actions:
+    name: "📋 Post-Rollback Actions"
+    runs-on: self-hosted
+    needs: [execute-rollback, verify-rollback, emergency-assessment]
+    if: always()
+    steps:
+      - name: Generate rollback report
+        run: |
+          echo "📋 Generating comprehensive rollback report..."
+          
+          REPORT_FILE="/var/log/rollback-report-$(date +%Y%m%d-%H%M%S).log"
+          
+          cat > "$REPORT_FILE" << EOF
+          ===============================================
+          EMERGENCY ROLLBACK REPORT
+          ===============================================
+          
+          Rollback Details:
+          - Timestamp: $(date +'%Y-%m-%d %H:%M:%S %Z')
+          - Reason: ${{ github.event.inputs.rollback_reason || github.event.client_payload.reason || 'unknown' }}
+          - Severity: ${{ needs.emergency-assessment.outputs.severity-level }}
+          - Strategy: ${{ needs.emergency-assessment.outputs.rollback-strategy }}
+          - Triggered by: ${{ github.actor }}
+          - Emergency Mode: ${{ github.event.inputs.emergency_mode || false }}
+          
+          Execution Results:
+          - Rollback Success: ${{ needs.execute-rollback.outputs.rollback-success }}
+          - Rollback Version: ${{ needs.execute-rollback.outputs.rollback-version }}
+          - Verification Passed: ${{ needs.verify-rollback.outputs.verification-passed }}
+          
+          System State:
+          - State Captured: ${{ needs.capture-current-state.outputs.state-captured }}
+          - Backup Location: ${{ needs.capture-current-state.outputs.backup-location }}
+          
+          Next Steps:
+          1. Review system logs for root cause analysis
+          2. Update monitoring alerts if needed
+          3. Schedule post-incident review
+          4. Consider implementing additional safeguards
+          
+          ===============================================
+          EOF
+          
+          echo "📄 Rollback report saved to: $REPORT_FILE"
+          echo "Report contents:"
+          cat "$REPORT_FILE"
+
+      - name: Update deployment status
+        if: needs.execute-rollback.outputs.rollback-success == 'true'
+        run: |
+          echo "🔄 Updating deployment status..."
+          
+          cd "$PROJECT_DIR" || exit 1
+          
+          # Create rollback marker
+          echo "$(date +'%Y-%m-%d %H:%M:%S'): Emergency rollback completed" >> .rollback-history
+          echo "Version: ${{ needs.execute-rollback.outputs.rollback-version }}" >> .rollback-history
+          echo "Reason: ${{ github.event.inputs.rollback_reason }}" >> .rollback-history
+          echo "---" >> .rollback-history
+          
+          echo "✅ Deployment status updated"
+
+      - name: Cleanup and preparation for recovery
+        run: |
+          echo "🧹 Performing post-rollback cleanup..."
+          
+          # Clean up temporary files older than 1 day
+          find /tmp -name "*rollback*" -mtime +1 -delete 2>/dev/null || true
+          find /var/log -name "*rollback*" -mtime +7 -delete 2>/dev/null || true
+          
+          # Prepare system for next deployment
+          echo "System ready for recovery deployment" > /opt/recovery-ready.flag
+          
+          echo "✅ Post-rollback cleanup completed"
+
+  # ==============================================================================
+  # FINAL NOTIFICATION AND SUMMARY
+  # ==============================================================================
+
+  rollback-summary:
+    name: "📊 Rollback Summary"
+    runs-on: ubuntu-latest
+    needs: [emergency-assessment, execute-rollback, verify-rollback, post-rollback-actions]
+    if: always()
+    steps:
+      - name: Send final notification
+        run: |
+          echo "📊 Generating rollback summary..."
+          
+          ROLLBACK_SUCCESS="${{ needs.execute-rollback.outputs.rollback-success }}"
+          VERIFICATION_SUCCESS="${{ needs.verify-rollback.outputs.verification-passed }}"
+          REASON="${{ github.event.inputs.rollback_reason || 'unknown' }}"
+          
+          # Determine overall status
+          if [[ "$ROLLBACK_SUCCESS" == "true" && "$VERIFICATION_SUCCESS" == "true" ]]; then
+            OVERALL_STATUS="✅ SUCCESS"
+            COLOR="65280"  # Green
+            TITLE="✅ Emergency Rollback Completed Successfully"
+          elif [[ "$ROLLBACK_SUCCESS" == "true" ]]; then
+            OVERALL_STATUS="⚠️ PARTIAL SUCCESS"
+            COLOR="16776960"  # Yellow
+            TITLE="⚠️ Emergency Rollback Completed with Issues"
+          else
+            OVERALL_STATUS="❌ FAILED"
+            COLOR="16711680"  # Red
+            TITLE="❌ Emergency Rollback Failed"
+          fi
+          
+          echo "## 🚨 Emergency Rollback Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Overall Status:** $OVERALL_STATUS" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Details" >> $GITHUB_STEP_SUMMARY
+          echo "- **Reason:** $REASON" >> $GITHUB_STEP_SUMMARY
+          echo "- **Severity:** ${{ needs.emergency-assessment.outputs.severity-level }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Strategy:** ${{ needs.emergency-assessment.outputs.rollback-strategy }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ needs.execute-rollback.outputs.rollback-version }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Results" >> $GITHUB_STEP_SUMMARY
+          echo "- **Rollback Execution:** ${{ needs.execute-rollback.outputs.rollback-success }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Verification:** ${{ needs.verify-rollback.outputs.verification-passed }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Send Discord notification if webhook available
+          if [[ -n "${{ secrets.DISCORD_WEBHOOK_URL }}" ]]; then
+            curl -X POST "${{ secrets.DISCORD_WEBHOOK_URL }}" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"embeds\": [{
+                  \"title\": \"$TITLE\",
+                  \"description\": \"**Reason:** $REASON\n**Status:** $OVERALL_STATUS\n**Version:** ${{ needs.execute-rollback.outputs.rollback-version }}\",
+                  \"color\": $COLOR,
+                  \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",
+                  \"fields\": [
+                    {\"name\": \"Rollback Execution\", \"value\": \"${{ needs.execute-rollback.outputs.rollback-success }}\", \"inline\": true},
+                    {\"name\": \"Verification\", \"value\": \"${{ needs.verify-rollback.outputs.verification-passed }}\", \"inline\": true},
+                    {\"name\": \"Workflow\", \"value\": \"[View Details](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\", \"inline\": false}
+                  ],
+                  \"footer\": {
+                    \"text\": \"Emergency Rollback System - Final Status\"
+                  }
+                }]
+              }" || echo "Discord notification failed"
+          fi

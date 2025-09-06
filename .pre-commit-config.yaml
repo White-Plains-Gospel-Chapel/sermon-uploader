@@ -147,3 +147,14 @@ repos:
         language: script
         files: go\.(mod|sum)$
         stages: [commit]
+
+      # Deployment configuration validation
+      - id: validate-deployment-config
+        name: Validate deployment configuration and workflows
+        entry: .github/pre-commit-hooks/validate-deployment-config.py
+        language: python
+        files: \.(yml|yaml|json|toml|mod|txt)$
+        stages: [commit]
+        additional_dependencies:
+          - pyyaml
+          - tomli
