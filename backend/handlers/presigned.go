@@ -51,8 +51,8 @@ func (h *Handlers) GetPresignedURL(c *fiber.Ctx) error {
 		})
 	}
 
-	// Generate presigned URL for direct upload (valid for 1 hour)
-	presignedURL, err := h.minioService.GeneratePresignedUploadURL(req.Filename, time.Hour)
+	// Generate smart presigned URL based on file size (valid for 1 hour)
+	presignedURL, isLargeFile, err := h.minioService.GeneratePresignedUploadURLSmart(req.Filename, req.FileSize, time.Hour)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{
 			"error":   true,
@@ -60,14 +60,32 @@ func (h *Handlers) GetPresignedURL(c *fiber.Ctx) error {
 		})
 	}
 
-	return c.JSON(fiber.Map{
-		"success":     true,
-		"isDuplicate": false,
-		"uploadUrl":   presignedURL,
-		"filename":    req.Filename,
-		"fileSize":    req.FileSize,
-		"expires":     time.Now().Add(time.Hour).Unix(),
-	})
+	// Determine upload method based on whether it's a large file
+	uploadMethod := "cloudflare"
+	if isLargeFile {
+		uploadMethod = "direct_minio"
+	}
+
+	response := fiber.Map{
+		"success":      true,
+		"isDuplicate":  false,
+		"uploadUrl":    presignedURL,
+		"filename":     req.Filename,
+		"fileSize":     req.FileSize,
+		"expires":      time.Now().Add(time.Hour).Unix(),
+		"isLargeFile":  isLargeFile,
+		"uploadMethod": uploadMethod,
+	}
+
+	// Add threshold info for debugging
+	if isLargeFile {
+		threshold := h.minioService.GetLargeFileThreshold()
+		response["largeFileThreshold"] = threshold
+		response["message"] = fmt.Sprintf("Large file (%.1f MB) will use direct MinIO upload to bypass CloudFlare 100MB limit", 
+			float64(req.FileSize)/(1024*1024))
+	}
+
+	return c.JSON(response)
 }
 
 // ProcessUploadedFile handles post-upload processing (called after direct upload)
@@ -204,19 +222,34 @@ func (h *Handlers) GetPresignedURLsBatch(c *fiber.Ctx) error {
 			fileResult["message"] = "File already exists"
 			duplicateCount++
 		} else {
-			// Generate presigned URL
-			presignedURL, err := h.minioService.GeneratePresignedUploadURL(fileReq.Filename, time.Hour)
+			// Generate smart presigned URL based on file size
+			presignedURL, isLargeFile, err := h.minioService.GeneratePresignedUploadURLSmart(fileReq.Filename, fileReq.FileSize, time.Hour)
 			if err != nil {
 				fileResult["error"] = true
 				fileResult["message"] = "Failed to generate upload URL"
 				fileResult["isDuplicate"] = false
 				errorCount++
 			} else {
+				uploadMethod := "cloudflare"
+				if isLargeFile {
+					uploadMethod = "direct_minio"
+				}
+				
 				fileResult["error"] = false
 				fileResult["isDuplicate"] = false
 				fileResult["uploadUrl"] = presignedURL
 				fileResult["fileSize"] = fileReq.FileSize
 				fileResult["expires"] = time.Now().Add(time.Hour).Unix()
+				fileResult["isLargeFile"] = isLargeFile
+				fileResult["uploadMethod"] = uploadMethod
+				
+				if isLargeFile {
+					threshold := h.minioService.GetLargeFileThreshold()
+					fileResult["largeFileThreshold"] = threshold
+					fileResult["message"] = fmt.Sprintf("Large file (%.1f MB) will use direct MinIO upload", 
+						float64(fileReq.FileSize)/(1024*1024))
+				}
+				
 				successCount++
 			}
 		}

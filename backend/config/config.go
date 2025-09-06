@@ -60,6 +60,9 @@ type Config struct {
 	MaxConnsPerHost int // Maximum connections per host
 	ConnTimeout     int // Connection timeout in seconds
 	KeepAlive       int // Keep-alive timeout in seconds
+
+	// Large File Upload Configuration
+	LargeFileThresholdMB int64 // Files larger than this (MB) use direct MinIO URLs to bypass CloudFlare 100MB limit
 }
 
 func New() *Config {
@@ -95,6 +98,9 @@ func New() *Config {
 	maxConnsPerHost, _ := strconv.Atoi(getEnv("MAX_CONNS_PER_HOST", "5"))
 	connTimeout, _ := strconv.Atoi(getEnv("CONN_TIMEOUT", "30"))
 	keepAlive, _ := strconv.Atoi(getEnv("KEEP_ALIVE", "30"))
+
+	// Large file configuration
+	largeFileThresholdMB, _ := strconv.ParseInt(getEnv("LARGE_FILE_THRESHOLD_MB", "100"), 10, 64)
 
 	// Auto-adjust concurrent uploads for Pi optimization
 	if piOptimization {
@@ -147,6 +153,9 @@ func New() *Config {
 		MaxConnsPerHost: maxConnsPerHost,
 		ConnTimeout:     connTimeout,
 		KeepAlive:       keepAlive,
+
+		// Large file configuration
+		LargeFileThresholdMB: largeFileThresholdMB,
 	}
 }
 
