@@ -9,12 +9,13 @@ services:
       - "9000:9000"      # MinIO API
       - "9001:9001"      # MinIO Console
     environment:
-      - MINIO_ENDPOINT=http://localhost:9000
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-localhost:9000}
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
       - MINIO_SECURE=false
       - MINIO_BUCKET=${MINIO_BUCKET:-sermons}
       - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL}
+      - IMAGE_REVISION=${IMAGE_REVISION:-}
       - WAV_SUFFIX=${WAV_SUFFIX:-_raw}
       - AAC_SUFFIX=${AAC_SUFFIX:-_streamable}
       - BATCH_THRESHOLD=${BATCH_THRESHOLD:-2}
