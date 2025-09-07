@@ -46,6 +46,17 @@ jobs:
             echo "should-deploy=true" >> $GITHUB_OUTPUT
           fi
       
+      # Cache Go modules for faster builds
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+      
       # Backend tests
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -71,6 +82,17 @@ jobs:
           
           echo "🔍 Running go vet..."
           go vet ./...
+      
+      # Cache Node modules for faster builds
+      - name: Cache Node modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.npm
+            frontend/node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
       
       # Frontend tests
       - name: Setup Node
@@ -127,6 +149,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
+      # Cache Docker layers
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+      
       - name: Notify Discord - Build Started
         run: |
           if [[ -n "${{ secrets.DISCORD_WEBHOOK_ENDPOINT }}" ]]; then
@@ -156,9 +187,11 @@ jobs:
             BUILD_TIME=${{ github.event.head_commit.timestamp }}
           cache-from: |
             type=gha
+            type=local,src=/tmp/.buildx-cache
             type=registry,ref=ghcr.io/${{ github.repository }}:buildcache
           cache-to: |
             type=gha,mode=max
+            type=local,dest=/tmp/.buildx-cache-new,mode=max
             type=inline
           outputs: type=docker,dest=/tmp/image.tar
       
@@ -168,6 +201,11 @@ jobs:
           name: docker-image
           path: /tmp/image.tar
           retention-days: 1
+      
+      - name: Move cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache || true
           
       - name: Notify Discord - Build Completed
         if: always()

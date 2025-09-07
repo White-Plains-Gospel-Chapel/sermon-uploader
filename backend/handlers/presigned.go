@@ -74,8 +74,8 @@ func (h *Handlers) GetPresignedURL(c *fiber.Ctx) error {
 		})
 	}
 
-	// Generate smart presigned URL based on file size (valid for 1 hour)
-	presignedURL, isLargeFile, err := h.minioService.GeneratePresignedUploadURLSmart(req.Filename, req.FileSize, time.Hour)
+	// Generate smart presigned URL based on file size (valid for 1 hour) with CORS support
+	presignedURL, isLargeFile, err := h.minioService.GeneratePresignedUploadURLWithCORS(req.Filename, req.FileSize, time.Hour)
 	if err != nil {
 		// Log presigned URL generation failure
 		if h.productionLogger != nil {
