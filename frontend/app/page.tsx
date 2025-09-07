@@ -2,6 +2,7 @@
 
 import { ErrorBoundary } from '@/components/common/ErrorBoundary'
 import { UploadManagerOptimized } from '@/components/upload/UploadManagerOptimized'
+import { VersionDisplay } from '@/components/common/VersionDisplay'
 import { UI_TEXT } from '@/utils/constants'
 
 export default function UploadPage() {
@@ -21,6 +22,9 @@ export default function UploadPage() {
               <span>✓ Raspberry Pi optimized</span>
               <span>✓ Duplicate detection</span>
               <span>✓ Real-time progress</span>
+            </div>
+            <div className="mt-3 pt-3 border-t border-slate-200">
+              <VersionDisplay />
             </div>
           </header>
           
