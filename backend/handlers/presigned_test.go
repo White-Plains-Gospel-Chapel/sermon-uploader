@@ -160,7 +160,7 @@ func (h *TestHandlers) GetPresignedURL(c *fiber.Ctx) error {
 }
 
 // Test large file presigned URL generation - proper unit test
-func TestPresignedURL_LargeFiles_ShouldFail(t *testing.T) {
+func TestPresignedURL_LargeFiles_DirectMinIO(t *testing.T) {
 	// Create mock services
 	mockMinio := &MockMinIOService{}
 	mockConfig := &config.Config{}
@@ -173,8 +173,13 @@ func TestPresignedURL_LargeFiles_ShouldFail(t *testing.T) {
 
 	// Mock expectations for large file (over 100MB threshold)
 	largeFileSize := int64(200 * 1024 * 1024) // 200MB
+	largeFileThreshold := int64(100 * 1024 * 1024) // 100MB threshold
+	
 	mockMinio.On("CheckDuplicateByFilename", "large_file.wav").Return(false, nil)
-	mockMinio.On("GeneratePresignedUploadURL", "large_file.wav", mock.AnythingOfType("time.Duration")).Return("http://mocked-large-file-url", nil)
+	// GeneratePresignedUploadURLSmart returns (url, isLargeFile, error)
+	mockMinio.On("GeneratePresignedUploadURLSmart", "large_file.wav", largeFileSize, mock.AnythingOfType("time.Duration")).Return("http://192.168.1.127:9000/mocked-large-file-url", true, nil)
+	// GetLargeFileThreshold is called when isLargeFile is true
+	mockMinio.On("GetLargeFileThreshold").Return(largeFileThreshold)
 
 	// Create test request for large file
 	reqBody := map[string]interface{}{
@@ -201,16 +206,14 @@ func TestPresignedURL_LargeFiles_ShouldFail(t *testing.T) {
 	err = json.Unmarshal(ctx.Response().Body(), &response)
 	assert.NoError(t, err)
 	assert.True(t, response["success"].(bool))
-
-	// Check if large file optimizations are present
-	if largeFile, exists := response["largeFile"]; exists {
-		largeFileData := largeFile.(map[string]interface{})
-		assert.True(t, largeFileData["isLargeFile"].(bool))
-		t.Logf("✅ Large file optimizations detected: %+v", largeFileData)
-	} else {
-		// Large file optimizations might not be implemented yet - that's ok for testing
-		t.Log("⚠️  Large file optimizations not detected - handler treats as regular file")
-	}
+	
+	// Verify large file flags are set correctly
+	assert.True(t, response["isLargeFile"].(bool), "Should be marked as large file")
+	assert.Equal(t, "direct_minio", response["uploadMethod"].(string), "Should use direct MinIO upload")
+	assert.Contains(t, response["uploadUrl"].(string), "192.168.1.127:9000", "Should contain direct MinIO URL")
+	
+	t.Logf("✅ Large file response: isLargeFile=%v, uploadMethod=%s, url=%s", 
+		response["isLargeFile"], response["uploadMethod"], response["uploadUrl"])
 
 	// Verify mock expectations
 	mockMinio.AssertExpectations(t)
@@ -231,9 +234,12 @@ func TestCorrectAPIEndpointPath(t *testing.T) {
 		config:       mockConfig,
 	}
 
-	// Mock expectations
+	// Mock expectations  
+	fileSize := int64(1073741824) // 1GB - this is a large file
 	mockMinio.On("CheckDuplicateByFilename", "test.wav").Return(false, nil)
-	mockMinio.On("GeneratePresignedUploadURL", "test.wav", mock.AnythingOfType("time.Duration")).Return("http://mocked-presigned-url", nil)
+	// This is a large file (1GB), so it should return isLargeFile=true
+	mockMinio.On("GeneratePresignedUploadURLSmart", "test.wav", fileSize, mock.AnythingOfType("time.Duration")).Return("http://192.168.1.127:9000/mocked-presigned-url", true, nil)
+	mockMinio.On("GetLargeFileThreshold").Return(int64(100 * 1024 * 1024)) // 100MB threshold
 
 	// Test correct handler behavior
 	reqBody := `{"filename": "test.wav", "fileSize": 1073741824}`
@@ -254,7 +260,9 @@ func TestCorrectAPIEndpointPath(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, response["success"].(bool))
 	assert.False(t, response["isDuplicate"].(bool))
-	assert.Equal(t, "http://mocked-presigned-url", response["uploadUrl"].(string))
+	assert.Equal(t, "http://192.168.1.127:9000/mocked-presigned-url", response["uploadUrl"].(string))
+	assert.True(t, response["isLargeFile"].(bool), "1GB file should be marked as large")
+	assert.Equal(t, "direct_minio", response["uploadMethod"].(string))
 
 	// Verify mock expectations
 	mockMinio.AssertExpectations(t)
@@ -276,8 +284,10 @@ func TestPresignedURL_MissingFileSize_ShouldFail(t *testing.T) {
 	}
 
 	// Mock expectations
+	fileSize := int64(0) // No file size provided, defaults to 0
 	mockMinio.On("CheckDuplicateByFilename", "test.wav").Return(false, nil)
-	mockMinio.On("GeneratePresignedUploadURL", "test.wav", mock.AnythingOfType("time.Duration")).Return("http://mocked-presigned-url", nil)
+	// Small file (size 0), returns isLargeFile=false
+	mockMinio.On("GeneratePresignedUploadURLSmart", "test.wav", fileSize, mock.AnythingOfType("time.Duration")).Return("http://mocked-presigned-url", false, nil)
 
 	// Request without fileSize (should still work as fileSize defaults to 0)
 	reqBody := `{"filename": "test.wav"}`
@@ -453,8 +463,9 @@ func TestPresignedURL_Success_ShouldReturnURL(t *testing.T) {
 	}
 
 	// Mock expectations - successful case
+	fileSize := int64(1048576) // 1MB - small file (matching the request)
 	mockMinio.On("CheckDuplicateByFilename", "test.wav").Return(false, nil)
-	mockMinio.On("GeneratePresignedUploadURL", "test.wav", mock.AnythingOfType("time.Duration")).Return("http://mocked-success-url", nil)
+	mockMinio.On("GeneratePresignedUploadURLSmart", "test.wav", fileSize, mock.AnythingOfType("time.Duration")).Return("http://mocked-success-url", false, nil)
 
 	// Create test request
 	reqBody := map[string]interface{}{
@@ -506,8 +517,10 @@ func TestLargeFileUploadTimeout_ShouldFail(t *testing.T) {
 	}
 
 	// Mock expectations for large file (should trigger validation)
+	largeFileSize := int64(1024 * 1024 * 1024) // 1GB
 	mockMinio.On("CheckDuplicateByFilename", "timeout_test_1gb.wav").Return(false, nil)
-	mockMinio.On("GeneratePresignedUploadURL", "timeout_test_1gb.wav", mock.AnythingOfType("time.Duration")).Return("http://mocked-url", nil)
+	mockMinio.On("GeneratePresignedUploadURLSmart", "timeout_test_1gb.wav", largeFileSize, mock.AnythingOfType("time.Duration")).Return("http://192.168.1.127:9000/mocked-url", true, nil)
+	mockMinio.On("GetLargeFileThreshold").Return(int64(100 * 1024 * 1024))
 
 	// Create test request for 1GB file
 	reqBody := map[string]interface{}{
@@ -557,9 +570,13 @@ func TestConcurrentLargeFiles_ShouldFail(t *testing.T) {
 	// Set up mock expectations for all concurrent requests
 	for _, reqBody := range fileRequests {
 		filename := reqBody["filename"].(string)
+		fileSize := int64(reqBody["fileSize"].(int))
 		mockMinio.On("CheckDuplicateByFilename", filename).Return(false, nil)
-		mockMinio.On("GeneratePresignedUploadURL", filename, mock.AnythingOfType("time.Duration")).Return("http://mocked-url", nil)
+		// These are all 1GB files, so they're large files
+		mockMinio.On("GeneratePresignedUploadURLSmart", filename, fileSize, mock.AnythingOfType("time.Duration")).Return("http://192.168.1.127:9000/mocked-url", true, nil)
 	}
+	// Mock GetLargeFileThreshold for all large files
+	mockMinio.On("GetLargeFileThreshold").Return(int64(100 * 1024 * 1024))
 
 	results := make(chan error, len(fileRequests))
 	app := fiber.New()

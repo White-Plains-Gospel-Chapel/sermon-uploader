@@ -46,8 +46,20 @@ jobs:
       - name: Test Backend
         working-directory: backend
         run: |
+          echo "🔍 Verifying Go modules..."
           go mod verify
-          go test -v ./...
+          
+          echo "🧪 Running Go tests with detailed output..."
+          go test -v -race -coverprofile=coverage.out ./... 2>&1 | tee test-output.log || {
+            echo "❌ Tests failed! Last 50 lines of output:"
+            tail -50 test-output.log
+            exit 1
+          }
+          
+          echo "📊 Test coverage:"
+          go tool cover -func=coverage.out | tail -5
+          
+          echo "🔍 Running go vet..."
           go vet ./...
       
       # Frontend tests
@@ -61,9 +73,24 @@ jobs:
       - name: Test Frontend
         working-directory: frontend
         run: |
+          echo "📦 Installing dependencies..."
           npm ci
-          npm run type-check || npx tsc --noEmit
-          npm run build
+          
+          echo "🔍 TypeScript type checking..."
+          npx tsc --noEmit 2>&1 | tee typescript-output.log || {
+            echo "❌ TypeScript errors found:"
+            cat typescript-output.log
+            exit 1
+          }
+          
+          echo "🏗️ Building frontend..."
+          npm run build 2>&1 | tee build-output.log || {
+            echo "❌ Build failed! Last 50 lines:"
+            tail -50 build-output.log
+            exit 1
+          }
+          
+          echo "✅ Frontend build successful!"
 
   # Stage 2: Build Docker image (only on master)
   build:
