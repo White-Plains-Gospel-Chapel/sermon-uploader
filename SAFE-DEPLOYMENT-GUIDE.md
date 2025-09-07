@@ -58,7 +58,7 @@ This installs:
 
 #### Phase 2: Build Validation (GitHub-hosted)
 - Go tests with race detection
-- Code coverage requirements (>60%)
+- Code coverage requirements (100%)
 - Linting with golangci-lint
 - Docker build test
 - Container security scanning

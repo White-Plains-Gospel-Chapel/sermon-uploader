@@ -103,10 +103,14 @@ export const api = {
     return response.json()
   },
 
-  // Upload directly to MinIO using presigned URL
+  // Upload directly to MinIO using presigned URL (supports both CloudFlare and direct MinIO)
   async uploadToMinIO(file: File, presignedURL: string, onProgress?: (progress: number) => void) {
     return new Promise<void>((resolve, reject) => {
       const xhr = new XMLHttpRequest()
+
+      // Detect if this is a direct MinIO upload (for better error handling)
+      const isDirect = presignedURL.includes('192.168.1.127:9000')
+      const uploadType = isDirect ? 'direct MinIO' : 'CloudFlare CDN'
 
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable && onProgress) {
@@ -117,17 +121,41 @@ export const api = {
 
       xhr.onload = () => {
         if (xhr.status === 200 || xhr.status === 204) {
+          console.log(`✅ Upload successful via ${uploadType}`)
           resolve()
         } else {
-          reject(new Error(`Upload failed with status ${xhr.status}`))
+          const errorMsg = `Upload failed via ${uploadType} with status ${xhr.status}`
+          console.error(errorMsg)
+          reject(new Error(errorMsg))
         }
       }
 
-      xhr.onerror = () => reject(new Error('Upload failed'))
+      xhr.onerror = (e) => {
+        const errorMsg = `Upload failed via ${uploadType}: Network error`
+        console.error(errorMsg, e)
+        
+        // Provide specific guidance for direct MinIO uploads
+        if (isDirect) {
+          reject(new Error(`${errorMsg}. Please ensure MinIO server is accessible and CORS is properly configured.`))
+        } else {
+          reject(new Error(errorMsg))
+        }
+      }
+
+      xhr.ontimeout = () => {
+        const errorMsg = `Upload timed out via ${uploadType}`
+        console.error(errorMsg)
+        reject(new Error(errorMsg))
+      }
+
+      // Set appropriate timeout (longer for large files via direct MinIO)
+      xhr.timeout = isDirect ? 30 * 60 * 1000 : 10 * 60 * 1000 // 30min for direct, 10min for CloudFlare
 
       xhr.open('PUT', presignedURL)
       // Preserve original WAV quality - no compression headers
       xhr.setRequestHeader('Content-Type', 'audio/wav')
+      
+      console.log(`🚀 Starting upload via ${uploadType} (${(file.size / 1024 / 1024).toFixed(1)} MB)`)
       xhr.send(file) // Send raw file data - no compression
     })
   },

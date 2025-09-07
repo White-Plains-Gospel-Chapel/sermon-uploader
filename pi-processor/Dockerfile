@@ -24,7 +24,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 # Copy application files
 COPY sermon_queue_gui.py ./
-COPY .env.example ./.env
+# Copy .env if it exists, otherwise it will be provided at runtime
+COPY .en[v] ./.env* ./
 
 # Create necessary directories with proper permissions
 RUN mkdir -p /var/log /tmp/sermon_processing && \

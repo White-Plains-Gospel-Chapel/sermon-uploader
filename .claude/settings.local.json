@@ -40,7 +40,9 @@
       "Read(/Users/gaius/Documents/StitchT/Sermon Uploader Project/**)",
       "WebFetch(domain:youtu.be)",
       "WebSearch",
-      "Bash(gh repo view:*)"
+      "Bash(gh repo view:*)",
+      "Read(/Users/gaius/Documents/WPGC Services/01-Sermon-Uploader/**)",
+      "Read(/Users/gaius/Documents/WPGC Services/01-Sermon-Uploader/API-Documentation/**)"
     ],
     "deny": [],
     "ask": []

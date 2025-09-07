@@ -52,7 +52,23 @@ func (m *MinIOService) GeneratePresignedUploadURLDirect(filename string, expiry 
 
 	ctx := context.Background()
 
-	// Always use internal client/endpoint for direct URLs (bypass CloudFlare)
+	// For direct uploads, always use public endpoint so clients can reach MinIO
+	if m.config.PublicMinIOEndpoint != "" {
+		pubClient, err := minio.New(m.config.PublicMinIOEndpoint, &minio.Options{
+			Creds:  credentials.NewStaticV4(m.config.MinIOAccessKey, m.config.MinIOSecretKey, ""),
+			Secure: m.config.PublicMinIOSecure,
+		})
+		if err != nil {
+			return "", err
+		}
+		presignedURL, err := pubClient.PresignedPutObject(ctx, m.config.MinioBucket, filename, expiry)
+		if err != nil {
+			return "", err
+		}
+		return presignedURL.String(), nil
+	}
+
+	// Fallback: use internal client (not recommended for browser uploads)
 	presignedURL, err := m.client.PresignedPutObject(ctx, m.config.MinioBucket, filename, expiry)
 	if err != nil {
 		return "", err

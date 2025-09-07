@@ -180,11 +180,11 @@ check_audio_test_coverage() {
             local coverage=$(go tool cover -func=coverage.out | grep "total:" | awk '{print $3}' | sed 's/%//')
             echo "  📊 Backend coverage: ${coverage}%"
             
-            if (( $(echo "$coverage >= 80.0" | bc -l) )); then
-                echo "  ✅ Backend coverage meets minimum threshold (80%)"
+            if (( $(echo "$coverage >= 100.0" | bc -l) )); then
+                echo "  ✅ Backend coverage meets 100% threshold"
                 TESTS_PASSED=$((TESTS_PASSED + 1))
             else
-                echo "  ⚠️  Backend coverage below 80% threshold"
+                echo "  ⚠️  Backend coverage below 100% threshold"
                 TESTS_FAILED=$((TESTS_FAILED + 1))
             fi
             

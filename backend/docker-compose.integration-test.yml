@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  # MinIO for S3-compatible object storage testing
+  minio-test:
+    image: minio/minio:latest
+    container_name: minio-integration-test
+    ports:
+      - "9001:9000"  # Different port to avoid conflicts
+      - "9002:9001"  # Console port
+    environment:
+      MINIO_ROOT_USER: testuser
+      MINIO_ROOT_PASSWORD: testpassword
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-test-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - integration-test
+
+  # Redis for potential caching/session testing
+  redis-test:
+    image: redis:7-alpine
+    container_name: redis-integration-test
+    ports:
+      - "6380:6379"  # Different port to avoid conflicts
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - integration-test
+
+  # Mock Discord webhook server for testing notifications
+  webhook-mock:
+    image: mendhak/http-https-echo:latest
+    container_name: webhook-mock-integration-test
+    ports:
+      - "8081:8080"  # Different port to avoid conflicts
+    environment:
+      HTTP_PORT: 8080
+      LOG_WITHOUT_NEWLINE: "true"
+      LOG_IGNORE_PATH: "/favicon.ico"
+    networks:
+      - integration-test
+
+volumes:
+  minio-test-data:
+    driver: local
+
+networks:
+  integration-test:
+    driver: bridge

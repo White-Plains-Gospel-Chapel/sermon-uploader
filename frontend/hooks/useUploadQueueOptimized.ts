@@ -135,6 +135,12 @@ export function useUploadQueueOptimized() {
           return
         }
         
+        // Check if this is a large file upload
+        if (result.isLargeFile) {
+          console.log(`📦 Large file detected: ${uploadFile.file.name} (${(uploadFile.file.size / 1024 / 1024).toFixed(1)} MB)`)
+          console.log(`🔄 Using direct MinIO upload to bypass CloudFlare 100MB limit`)
+        }
+        
         await uploadSingleFile(uploadFile, result.uploadUrl)
       })
     )
@@ -164,6 +170,13 @@ export function useUploadQueueOptimized() {
               error: 'File already exists'
             })
             return
+          }
+          
+          // Log large file information for individual uploads too
+          const fileSizeMB = uploadFile.file.size / 1024 / 1024
+          if (fileSizeMB > 100) {
+            console.log(`📦 Large file detected: ${uploadFile.file.name} (${fileSizeMB.toFixed(1)} MB)`)
+            console.log(`🔄 Using direct MinIO upload to bypass CloudFlare 100MB limit`)
           }
           
           await uploadSingleFile(uploadFile, uploadUrl)

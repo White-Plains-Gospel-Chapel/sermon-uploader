@@ -16,14 +16,14 @@ FAILED=0
 # 1. Check Go builds (most critical)
 if [ -d "backend" ]; then
     echo "🔧 Checking Go build..."
-    if cd backend && go build -o /tmp/test-build ./... 2>/dev/null; then
+    (cd backend && go build -o /tmp/test-build ./... 2>/dev/null)
+    if [ $? -eq 0 ]; then
         echo -e "${GREEN}✅ Go build successful${NC}"
         rm -f /tmp/test-build
     else
         echo -e "${RED}❌ Go build failed${NC}"
         FAILED=1
     fi
-    cd ..
 fi
 
 # 2. Check Docker builds

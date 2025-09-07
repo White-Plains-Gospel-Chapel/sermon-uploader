@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -26,6 +27,9 @@ type TestHandlers struct {
 // MinIOServiceInterface defines the interface for MinIO operations needed by handlers
 type MinIOServiceInterface interface {
 	GeneratePresignedUploadURL(filename string, expiry time.Duration) (string, error)
+	GeneratePresignedUploadURLDirect(filename string, expiry time.Duration) (string, error)
+	GeneratePresignedUploadURLSmart(filename string, fileSize int64, expiry time.Duration) (string, bool, error)
+	GetLargeFileThreshold() int64
 	CheckDuplicateByFilename(filename string) (bool, error)
 	FileExists(filename string) (bool, error)
 	GetFileInfo(filename string) (*ObjectInfoMock, error)
@@ -40,6 +44,21 @@ type MockMinIOService struct {
 func (m *MockMinIOService) GeneratePresignedUploadURL(filename string, expiry time.Duration) (string, error) {
 	args := m.Called(filename, expiry)
 	return args.String(0), args.Error(1)
+}
+
+func (m *MockMinIOService) GeneratePresignedUploadURLDirect(filename string, expiry time.Duration) (string, error) {
+	args := m.Called(filename, expiry)
+	return args.String(0), args.Error(1)
+}
+
+func (m *MockMinIOService) GeneratePresignedUploadURLSmart(filename string, fileSize int64, expiry time.Duration) (string, bool, error) {
+	args := m.Called(filename, fileSize, expiry)
+	return args.String(0), args.Bool(1), args.Error(2)
+}
+
+func (m *MockMinIOService) GetLargeFileThreshold() int64 {
+	args := m.Called()
+	return args.Get(0).(int64)
 }
 
 func (m *MockMinIOService) CheckDuplicateByFilename(filename string) (bool, error) {
@@ -103,8 +122,8 @@ func (h *TestHandlers) GetPresignedURL(c *fiber.Ctx) error {
 		})
 	}
 
-	// Generate presigned URL for direct upload
-	presignedURL, err := h.minioService.GeneratePresignedUploadURL(req.Filename, time.Hour)
+	// Generate smart presigned URL based on file size
+	presignedURL, isLargeFile, err := h.minioService.GeneratePresignedUploadURLSmart(req.Filename, req.FileSize, time.Hour)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{
 			"error":   true,
@@ -112,14 +131,32 @@ func (h *TestHandlers) GetPresignedURL(c *fiber.Ctx) error {
 		})
 	}
 
-	return c.JSON(fiber.Map{
-		"success":     true,
-		"isDuplicate": false,
-		"uploadUrl":   presignedURL,
-		"filename":    req.Filename,
-		"fileSize":    req.FileSize,
-		"expires":     time.Now().Add(time.Hour).Unix(),
-	})
+	// Determine upload method based on whether it's a large file
+	uploadMethod := "cloudflare"
+	if isLargeFile {
+		uploadMethod = "direct_minio"
+	}
+
+	response := fiber.Map{
+		"success":      true,
+		"isDuplicate":  false,
+		"uploadUrl":    presignedURL,
+		"filename":     req.Filename,
+		"fileSize":     req.FileSize,
+		"expires":      time.Now().Add(time.Hour).Unix(),
+		"isLargeFile":  isLargeFile,
+		"uploadMethod": uploadMethod,
+	}
+
+	// Add threshold info for debugging
+	if isLargeFile {
+		threshold := h.minioService.GetLargeFileThreshold()
+		response["largeFileThreshold"] = threshold
+		response["message"] = fmt.Sprintf("Large file (%.1f MB) will use direct MinIO upload to bypass CloudFlare 100MB limit", 
+			float64(req.FileSize)/(1024*1024))
+	}
+
+	return c.JSON(response)
 }
 
 // Test large file presigned URL generation - proper unit test

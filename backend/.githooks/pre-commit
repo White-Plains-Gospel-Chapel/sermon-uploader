@@ -50,6 +50,20 @@ if command_exists go; then
     exit 1
   fi
   
+  # Run golangci-lint for comprehensive code quality checks
+  echo "  🔍 Running golangci-lint..."
+  if command_exists golangci-lint; then
+    golangci-lint run --config .golangci.yml || {
+      echo "❌ golangci-lint found issues"
+      echo "Fix the issues above or run 'golangci-lint run --fix' to auto-fix some issues"
+      exit 1
+    }
+    echo "  ✅ golangci-lint passed"
+  else
+    echo "  ⚠️  golangci-lint not found - install it for comprehensive linting"
+    echo "     Installation: https://golangci-lint.run/usage/install/"
+  fi
+  
   cd ..
   echo "✅ Go backend checks passed"
 else
