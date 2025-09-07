@@ -19,27 +19,13 @@ env:
 jobs:
   # Stage 1: Test (only if code changed)
   test:
-    name: Test (Smart Cache)
+    name: Test
     runs-on: ubuntu-latest
     outputs:
       should-deploy: ${{ steps.check.outputs.should-deploy }}
-      backend-changed: ${{ steps.changes.outputs.backend }}
-      frontend-changed: ${{ steps.changes.outputs.frontend }}
     
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # For change detection
-      
-      - name: Detect changes
-        id: changes
-        uses: dorny/paths-filter@v2
-        with:
-          filters: |
-            backend:
-              - 'backend/**'
-            frontend:
-              - 'frontend/**'
       
       - name: Notify Discord - Test Started
         run: |
@@ -60,16 +46,14 @@ jobs:
             echo "should-deploy=true" >> $GITHUB_OUTPUT
           fi
       
-      # Backend tests (only if changed)
+      # Backend tests
       - name: Setup Go
-        if: steps.changes.outputs.backend == 'true'
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: backend/go.sum
       
       - name: Test Backend
-        if: steps.changes.outputs.backend == 'true'
         working-directory: backend
         run: |
           echo "🔍 Verifying Go modules..."
@@ -88,9 +72,8 @@ jobs:
           echo "🔍 Running go vet..."
           go vet ./...
       
-      # Frontend tests (only if changed)
+      # Frontend tests
       - name: Setup Node
-        if: steps.changes.outputs.frontend == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -98,7 +81,6 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       
       - name: Test Frontend
-        if: steps.changes.outputs.frontend == 'true'
         working-directory: frontend
         run: |
           echo "📦 Installing dependencies..."
