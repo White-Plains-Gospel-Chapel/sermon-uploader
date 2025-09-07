@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Unified Upload Example</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        .upload-area {
+            border: 2px dashed #ccc;
+            border-radius: 10px;
+            padding: 40px;
+            text-align: center;
+            background: #f9f9f9;
+            cursor: pointer;
+        }
+        .upload-area.dragover {
+            background: #e3f2fd;
+            border-color: #2196F3;
+        }
+        .progress {
+            margin-top: 20px;
+            display: none;
+        }
+        .progress-bar {
+            height: 30px;
+            background: #f0f0f0;
+            border-radius: 5px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background: #4CAF50;
+            transition: width 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+        }
+        .status {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .status.success { background: #d4edda; color: #155724; }
+        .status.error { background: #f8d7da; color: #721c24; }
+    </style>
+</head>
+<body>
+    <h1>🎙️ Sermon Upload (Unified API)</h1>
+    
+    <div class="upload-area" id="uploadArea">
+        <p>📁 Drop your sermon file here or click to select</p>
+        <p style="font-size: 0.9em; color: #666;">Supports files up to 5GB</p>
+        <input type="file" id="fileInput" style="display: none;" accept=".wav,.mp3,.aac">
+    </div>
+    
+    <div class="progress" id="progress">
+        <h3>Upload Progress</h3>
+        <div class="progress-bar">
+            <div class="progress-fill" id="progressFill">0%</div>
+        </div>
+        <div class="status" id="status"></div>
+    </div>
+
+    <script>
+        const API_URL = 'http://192.168.1.127:8000/api/upload';
+        const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunks
+        
+        class UnifiedUploader {
+            constructor() {
+                this.setupEventListeners();
+            }
+            
+            setupEventListeners() {
+                const uploadArea = document.getElementById('uploadArea');
+                const fileInput = document.getElementById('fileInput');
+                
+                uploadArea.addEventListener('click', () => fileInput.click());
+                fileInput.addEventListener('change', (e) => this.handleFile(e.target.files[0]));
+                
+                // Drag and drop
+                uploadArea.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    uploadArea.classList.add('dragover');
+                });
+                
+                uploadArea.addEventListener('dragleave', () => {
+                    uploadArea.classList.remove('dragover');
+                });
+                
+                uploadArea.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    uploadArea.classList.remove('dragover');
+                    this.handleFile(e.dataTransfer.files[0]);
+                });
+            }
+            
+            async handleFile(file) {
+                if (!file) return;
+                
+                console.log('📁 File selected:', file.name, 'Size:', this.formatBytes(file.size));
+                
+                document.getElementById('progress').style.display = 'block';
+                this.updateStatus('Starting upload...', 'info');
+                
+                try {
+                    // Step 1: Start upload
+                    const fileHash = await this.calculateHash(file);
+                    const startResponse = await this.callAPI({
+                        action: 'start',
+                        filename: file.name,
+                        fileSize: file.size,
+                        fileHash: fileHash
+                    });
+                    
+                    if (!startResponse.success) {
+                        throw new Error(startResponse.error || 'Failed to start upload');
+                    }
+                    
+                    const { uploadId, totalParts, chunkSize } = startResponse.data;
+                    console.log('✅ Upload started:', uploadId, 'Parts:', totalParts);
+                    
+                    // Step 2: Upload each part
+                    const parts = [];
+                    for (let partNumber = 1; partNumber <= totalParts; partNumber++) {
+                        const start = (partNumber - 1) * chunkSize;
+                        const end = Math.min(start + chunkSize, file.size);
+                        const chunk = file.slice(start, end);
+                        
+                        // Get presigned URL
+                        const urlResponse = await this.callAPI({
+                            action: 'get_url',
+                            uploadId: uploadId,
+                            partNumber: partNumber
+                        });
+                        
+                        if (!urlResponse.success) {
+                            throw new Error(`Failed to get URL for part ${partNumber}`);
+                        }
+                        
+                        // Upload chunk directly to MinIO
+                        this.updateStatus(`Uploading part ${partNumber} of ${totalParts}...`, 'info');
+                        const etag = await this.uploadChunk(urlResponse.data.url, chunk);
+                        
+                        parts.push({
+                            partNumber: partNumber,
+                            etag: etag
+                        });
+                        
+                        // Update progress
+                        const progress = (partNumber / totalParts) * 100;
+                        this.updateProgress(progress);
+                    }
+                    
+                    // Step 3: Complete upload
+                    this.updateStatus('Finalizing upload...', 'info');
+                    const completeResponse = await this.callAPI({
+                        action: 'complete',
+                        uploadId: uploadId,
+                        parts: parts
+                    });
+                    
+                    if (!completeResponse.success) {
+                        throw new Error('Failed to complete upload');
+                    }
+                    
+                    this.updateStatus(`✅ Upload complete! File: ${file.name}`, 'success');
+                    this.updateProgress(100);
+                    
+                } catch (error) {
+                    console.error('Upload error:', error);
+                    this.updateStatus(`❌ Upload failed: ${error.message}`, 'error');
+                }
+            }
+            
+            async callAPI(data) {
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(data)
+                });
+                return response.json();
+            }
+            
+            async uploadChunk(url, chunk) {
+                const response = await fetch(url, {
+                    method: 'PUT',
+                    body: chunk
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Chunk upload failed: ${response.statusText}`);
+                }
+                
+                // Extract ETag from response headers
+                return response.headers.get('ETag') || `"${Date.now()}"`;
+            }
+            
+            async calculateHash(file) {
+                // Simple hash using first and last bytes + size
+                // In production, use proper SHA256
+                const firstBytes = await file.slice(0, 1000).arrayBuffer();
+                const lastBytes = await file.slice(-1000).arrayBuffer();
+                const view1 = new Uint8Array(firstBytes);
+                const view2 = new Uint8Array(lastBytes);
+                
+                let hash = file.size.toString();
+                for (let i = 0; i < Math.min(100, view1.length); i++) {
+                    hash += view1[i].toString(16);
+                }
+                for (let i = 0; i < Math.min(100, view2.length); i++) {
+                    hash += view2[i].toString(16);
+                }
+                
+                return hash.substring(0, 32);
+            }
+            
+            updateProgress(percent) {
+                const progressFill = document.getElementById('progressFill');
+                progressFill.style.width = percent + '%';
+                progressFill.textContent = Math.round(percent) + '%';
+            }
+            
+            updateStatus(message, type) {
+                const status = document.getElementById('status');
+                status.textContent = message;
+                status.className = 'status';
+                if (type === 'success') status.classList.add('success');
+                if (type === 'error') status.classList.add('error');
+            }
+            
+            formatBytes(bytes) {
+                if (bytes === 0) return '0 Bytes';
+                const k = 1024;
+                const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+            }
+        }
+        
+        // Initialize uploader
+        new UnifiedUploader();
+    </script>
+</body>
+</html>
