@@ -42,7 +42,6 @@ func (s *SystemResourceMonitor) buildSystemDiscordMessage() string {
 
 	est := time.Now().In(getSystemMonitorESTLocation())
 	sessionDuration := time.Since(s.sessionStart)
-	trends := s.calculateTrends()
 
 	var builder strings.Builder
 

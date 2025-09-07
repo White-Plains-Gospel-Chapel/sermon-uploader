@@ -17,7 +17,7 @@ func TestHealthCheck_IncludesBuildCommit(t *testing.T) {
 	defer os.Unsetenv("IMAGE_REVISION")
 
 	cfg := config.New()
-	h := New(nil, nil, nil, nil, cfg)
+	h := New(nil, nil, nil, nil, nil, cfg, nil)
 
 	app := fiber.New()
 	app.Get("/api/health", h.HealthCheck)

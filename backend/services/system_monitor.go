@@ -1,14 +1,10 @@
 package services
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"runtime"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
@@ -214,10 +210,8 @@ func (s *SystemResourceMonitor) collectAllMetrics() {
 	s.cpuUsage = s.collectCPUMetrics()
 	s.memoryUsage = s.collectMemoryMetrics()
 	s.thermalMetrics = s.collectThermalMetrics()
-	s.powerMetrics = s.collectPowerMetrics()
 	s.diskMetrics = s.collectDiskMetrics()
 	s.networkMetrics = s.collectNetworkMetrics()
-	s.systemLoad = s.collectSystemLoadMetrics()
 	
 	// Update historical data
 	s.updateHistoricalData()
@@ -381,10 +375,8 @@ func (s *SystemResourceMonitor) GetCurrentMetrics() map[string]interface{} {
 		"cpu":      s.cpuUsage,
 		"memory":   s.memoryUsage,
 		"thermal":  s.thermalMetrics,
-		"power":    s.powerMetrics,
 		"disk":     s.diskMetrics,
 		"network":  s.networkMetrics,
-		"system":   s.systemLoad,
 		"updated":  s.lastUpdate,
 	}
 }
