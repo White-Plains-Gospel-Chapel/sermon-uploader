@@ -254,24 +254,45 @@ if ! command -v mc &> /dev/null; then
     sudo mv mc /usr/local/bin/
 fi
 
-# Configure mc
-mc alias set local https://localhost:9000 gaius "John 3:16" --insecure
+# Determine if MinIO is using HTTPS or HTTP
+if curl -k -s https://localhost:9000/minio/health/live 2>/dev/null | grep -q "OK"; then
+    MINIO_PROTOCOL="https"
+    MC_INSECURE="--insecure"
+    echo "MinIO is running with HTTPS"
+elif curl -s http://localhost:9000/minio/health/live 2>/dev/null | grep -q "OK"; then
+    MINIO_PROTOCOL="http"
+    MC_INSECURE=""
+    echo "MinIO is running with HTTP"
+else
+    echo -e "${YELLOW}⚠️ MinIO not responding, skipping configuration${NC}"
+    MINIO_PROTOCOL=""
+fi
 
-# Create bucket if it doesn't exist
-mc mb local/sermons --ignore-existing --insecure
-
-echo -e "${GREEN}✓ MinIO configured${NC}"
+if [ ! -z "$MINIO_PROTOCOL" ]; then
+    # Configure mc
+    mc alias set local ${MINIO_PROTOCOL}://localhost:9000 gaius "John 3:16" $MC_INSECURE
+    
+    # Create bucket if it doesn't exist
+    mc mb local/sermons --ignore-existing $MC_INSECURE
+    
+    echo -e "${GREEN}✓ MinIO configured${NC}"
+fi
 
 # Step 8: Test the deployment
 echo ""
 echo "🧪 Step 8: Testing deployment..."
 
-# Test MinIO HTTPS
-if curl -k -s https://localhost:9000/minio/health/live | grep -q "OK"; then
+# Test MinIO (try both HTTPS and HTTP)
+if curl -k -s https://localhost:9000/minio/health/live 2>/dev/null | grep -q "OK"; then
     echo -e "${GREEN}✅ MinIO HTTPS is working${NC}"
+elif curl -s http://localhost:9000/minio/health/live 2>/dev/null | grep -q "OK"; then
+    echo -e "${GREEN}✅ MinIO HTTP is working${NC}"
 else
-    echo -e "${RED}❌ MinIO HTTPS test failed${NC}"
-    docker logs sermon-minio --tail 20
+    echo -e "${RED}❌ MinIO test failed${NC}"
+    # Only try docker logs if docker is available
+    if command -v docker &> /dev/null && docker ps &> /dev/null; then
+        docker logs sermon-minio --tail 20 2>/dev/null || true
+    fi
 fi
 
 # Test backend
