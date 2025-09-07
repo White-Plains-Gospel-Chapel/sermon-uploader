@@ -4,6 +4,8 @@ on:
   push:
     branches: [master, main]
   workflow_dispatch:
+  
+# This is now your MAIN deployment workflow
 
 jobs:
   # Test phase runs on GitHub's infrastructure
