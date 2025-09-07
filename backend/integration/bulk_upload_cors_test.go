@@ -35,7 +35,13 @@ func NewBulkUploadCORSTest(t *testing.T) *BulkUploadCORSTest {
 
 // TestBulkUpload500MBWithCORS tests uploading 500MB+ files with CORS
 func TestBulkUpload500MBWithCORS(t *testing.T) {
+	// Start test server
+	server := StartTestServer(t)
+	defer server.Stop()
+	
+	// Create test instance with test server URL
 	test := NewBulkUploadCORSTest(t)
+	test.backendURL = server.URL()
 	
 	// Define test files totaling 500MB+
 	testFiles := []FileUpload{
@@ -149,7 +155,12 @@ func TestBulkUpload500MBWithCORS(t *testing.T) {
 
 // TestCORSErrorHandling tests CORS error scenarios
 func TestCORSErrorHandling(t *testing.T) {
+	// Start test server
+	server := StartTestServer(t)
+	defer server.Stop()
+	
 	test := NewBulkUploadCORSTest(t)
+	test.backendURL = server.URL()
 
 	t.Run("InvalidOrigin", func(t *testing.T) {
 		// Even with invalid origin, MinIO with * should allow
