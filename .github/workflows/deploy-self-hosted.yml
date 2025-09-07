@@ -8,8 +8,37 @@ on:
 # This is now your MAIN deployment workflow
 
 jobs:
-  # Deploy directly on YOUR Raspberry Pi!
+  # Test phase runs on GitHub's infrastructure
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.23'
+          cache: true
+          cache-dependency-path: backend/go.sum
+      
+      - name: Run backend tests
+        working-directory: ./backend
+        run: |
+          echo "📦 Installing dependencies..."
+          go mod download
+          
+          echo "✅ Running tests (excluding integration)..."
+          go test $(go list ./... | grep -v /integration) -v -race -short
+          
+          echo "🔨 Building backend..."
+          go build -o sermon-backend main.go
+          echo "✅ Build successful!"
+
+  # Deploy phase runs on YOUR Raspberry Pi!
   deploy:
+    needs: test  # Only deploy if tests pass
     runs-on: self-hosted  # This runs on your Pi!
     
     steps:
