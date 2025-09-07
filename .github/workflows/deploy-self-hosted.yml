@@ -23,18 +23,33 @@ jobs:
           cache: true
           cache-dependency-path: backend/go.sum
       
-      - name: Run backend tests
+      - name: Build backend
         working-directory: ./backend
         run: |
           echo "📦 Installing dependencies..."
           go mod download
           
-          echo "✅ Running tests (excluding integration)..."
-          go test $(go list ./... | grep -v /integration) -v -race -short
-          
-          echo "🔨 Building backend..."
-          go build -o sermon-backend main.go
+          echo "🔨 Building backend to check for compilation errors..."
+          go build -v -o sermon-backend main.go
           echo "✅ Build successful!"
+          
+          # Show binary info
+          ls -lh sermon-backend
+          file sermon-backend
+          
+      - name: Run backend tests
+        working-directory: ./backend
+        run: |
+          echo "🧪 Running tests (excluding integration)..."
+          go test $(go list ./... | grep -v /integration) -v -race -short
+          echo "✅ All tests passed!"
+      
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: sermon-backend-${{ github.sha }}
+          path: backend/sermon-backend
+          retention-days: 1
 
   # Deploy phase runs on YOUR Raspberry Pi!
   deploy:
