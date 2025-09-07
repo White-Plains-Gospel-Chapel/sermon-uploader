@@ -38,8 +38,8 @@ func StartTestServer(t *testing.T) *TestServer {
 	os.Setenv("MINIO_SECURE", "false")
 	os.Setenv("PORT", fmt.Sprintf("%d", port))
 
-	// Initialize configuration
-	cfg := config.New()
+	// Initialize configuration (needed for environment setup)
+	_ = config.New()
 
 	// Create Fiber app
 	app := fiber.New(fiber.Config{
@@ -118,9 +118,11 @@ func StartTestServer(t *testing.T) *TestServer {
 
 	// Wait for server to be ready
 	serverURL := fmt.Sprintf("http://localhost:%d", port)
+	client := &fiber.Client{}
 	for i := 0; i < 30; i++ {
-		resp, err := (&fiber.Client{}).Get(serverURL + "/api/health")
-		if err == nil && resp.StatusCode() == 200 {
+		req := client.Get(serverURL + "/api/health")
+		statusCode, _, errs := req.Bytes()
+		if len(errs) == 0 && statusCode == 200 {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
