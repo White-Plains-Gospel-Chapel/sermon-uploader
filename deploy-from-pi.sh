@@ -161,21 +161,59 @@ echo "🚀 Step 5: Building and starting services..."
 
 cd $REPO_PATH
 
-# Stop existing services
-docker-compose -f docker-compose.pi.yml down || true
-
-# Build backend
-cd backend
-go mod tidy
-go build -o sermon-backend
-
-# Return to repo root
-cd $REPO_PATH
-
-# Start services
-docker-compose -f docker-compose.pi.yml up -d
-
-echo -e "${GREEN}✓ Services started${NC}"
+# Check if Docker is available and running
+if command -v docker &> /dev/null && docker ps &> /dev/null; then
+    echo "Docker is available, using docker-compose deployment..."
+    
+    # Stop existing services
+    docker-compose -f docker-compose.pi.yml down || true
+    
+    # Build backend
+    cd backend
+    go mod tidy
+    go build -o sermon-backend
+    
+    # Return to repo root
+    cd $REPO_PATH
+    
+    # Start services
+    docker-compose -f docker-compose.pi.yml up -d
+    
+    echo -e "${GREEN}✓ Services started with Docker${NC}"
+else
+    echo "Docker not available or not running, using standalone deployment..."
+    
+    # Kill existing backend process
+    pkill sermon-backend || true
+    
+    # Build backend
+    cd backend
+    go mod tidy
+    go build -o sermon-backend
+    
+    # Start backend in background
+    nohup ./sermon-backend > $HOME/backend.log 2>&1 &
+    echo "Backend PID: $!"
+    
+    # Check if MinIO needs to be started
+    if ! curl -s http://localhost:9000/minio/health/live > /dev/null; then
+        echo "Starting MinIO standalone..."
+        # Download MinIO if not present
+        if [ ! -f /usr/local/bin/minio ]; then
+            wget https://dl.min.io/server/minio/release/linux-arm64/minio
+            chmod +x minio
+            sudo mv minio /usr/local/bin/
+        fi
+        
+        # Start MinIO
+        export MINIO_ROOT_USER=gaius
+        export MINIO_ROOT_PASSWORD="John 3:16"
+        nohup minio server $HOME/minio-data --address :9000 --console-address :9001 > $HOME/minio.log 2>&1 &
+        echo "MinIO PID: $!"
+    fi
+    
+    echo -e "${GREEN}✓ Services started standalone${NC}"
+fi
 
 # Step 6: Wait for services to be ready
 echo ""
