@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeAll, afterAll, jest } from '@jest/globals'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { api } from '../lib/api'
 
 // Increase timeout for large file tests
-jest.setTimeout(300000) // 5 minutes
+// Tests are configured with extended timeout in test config
 
 describe('Bulk Upload with Production API', () => {
   const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
@@ -196,7 +196,7 @@ describe('Bulk Upload with Production API', () => {
       corsResults.forEach((result, index) => {
         console.log(`CORS result for file ${index + 1}:`, result)
         expect(result.corsAllowed).toBeTruthy()
-        expect(result.status).toBeOneOf([200, 204])
+        expect([200, 204]).toContain(result.status)
       })
     })
     
@@ -303,7 +303,7 @@ describe('Bulk Upload with Production API', () => {
 
 // Add custom matcher
 expect.extend({
-  toBeOneOf(received, values) {
+  toBeOneOf(received: any, values: any[]) {
     const pass = values.includes(received)
     return {
       pass,
