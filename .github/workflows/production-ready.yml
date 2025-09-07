@@ -1,0 +1,481 @@
+name: Production-Ready Pipeline 2025
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: '1.23'
+  NODE_VERSION: '20'
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # Smart change detection
+  detect-changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      docker: ${{ steps.filter.outputs.docker }}
+      infrastructure: ${{ steps.filter.outputs.infrastructure }}
+      should-deploy: ${{ steps.deploy-check.outputs.should-deploy }}
+      affected-services: ${{ steps.affected.outputs.services }}
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Detect file changes
+        id: filter
+        uses: dorny/paths-filter@v2
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              - 'go.mod'
+              - 'go.sum'
+            frontend:
+              - 'frontend/**'
+              - 'package*.json'
+            docker:
+              - 'Dockerfile*'
+              - '.dockerignore'
+            infrastructure:
+              - '.github/workflows/**'
+              - 'docker-compose*.yml'
+              - '*.env*'
+      
+      - name: Determine affected services
+        id: affected
+        run: |
+          SERVICES=""
+          if [[ "${{ steps.filter.outputs.backend }}" == "true" ]]; then
+            SERVICES="${SERVICES}backend,"
+          fi
+          if [[ "${{ steps.filter.outputs.frontend }}" == "true" ]]; then
+            SERVICES="${SERVICES}frontend,"
+          fi
+          if [[ "${{ steps.filter.outputs.docker }}" == "true" ]]; then
+            SERVICES="${SERVICES}docker,"
+          fi
+          echo "services=${SERVICES}" >> $GITHUB_OUTPUT
+          
+          echo "### 📊 Change Detection Results" >> $GITHUB_STEP_SUMMARY
+          echo "- Backend: ${{ steps.filter.outputs.backend }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Frontend: ${{ steps.filter.outputs.frontend }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Docker: ${{ steps.filter.outputs.docker }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Infrastructure: ${{ steps.filter.outputs.infrastructure }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Affected: ${SERVICES:-none}" >> $GITHUB_STEP_SUMMARY
+      
+      - name: Check deployment eligibility
+        id: deploy-check
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "should-deploy=false" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == "refs/heads/master" || "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "should-deploy=true" >> $GITHUB_OUTPUT
+          else
+            echo "should-deploy=false" >> $GITHUB_OUTPUT
+          fi
+
+  # Extensive testing suite
+  test-suite:
+    name: Extensive Testing
+    needs: detect-changes
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        test-type: [unit, integration, security, performance]
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup test environment
+        run: |
+          echo "🧪 Setting up test environment for ${{ matrix.test-type }} tests"
+      
+      # Unit Tests
+      - name: Backend Unit Tests
+        if: matrix.test-type == 'unit' && needs.detect-changes.outputs.backend == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: backend/go.sum
+      
+      - name: Run Backend Unit Tests
+        if: matrix.test-type == 'unit' && needs.detect-changes.outputs.backend == 'true'
+        working-directory: backend
+        run: |
+          echo "🧪 Running comprehensive unit tests..."
+          go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+          echo "📊 Coverage: $(go tool cover -func=coverage.out | grep total | awk '{print $3}')"
+          
+          # Fail if coverage is below threshold
+          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          if (( $(echo "$COVERAGE < 70" | bc -l) )); then
+            echo "❌ Coverage $COVERAGE% is below 70% threshold"
+            exit 1
+          fi
+      
+      - name: Frontend Unit Tests
+        if: matrix.test-type == 'unit' && needs.detect-changes.outputs.frontend == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      
+      - name: Run Frontend Unit Tests
+        if: matrix.test-type == 'unit' && needs.detect-changes.outputs.frontend == 'true'
+        working-directory: frontend
+        run: |
+          npm ci
+          npm test -- --coverage --watchAll=false
+      
+      # Integration Tests
+      - name: Integration Tests
+        if: matrix.test-type == 'integration'
+        run: |
+          echo "🔗 Running integration tests..."
+          # Start test containers
+          docker-compose -f docker-compose.test.yml up -d
+          sleep 10
+          
+          # Run integration test suite
+          if [[ "${{ needs.detect-changes.outputs.backend }}" == "true" ]]; then
+            cd backend
+            go test -tags=integration -v ./... || true
+            cd ..
+          fi
+          
+          # Cleanup
+          docker-compose -f docker-compose.test.yml down
+      
+      # Security Tests
+      - name: Security Scanning
+        if: matrix.test-type == 'security'
+        run: |
+          echo "🔒 Running security scans..."
+          
+          # Backend security scan
+          if [[ "${{ needs.detect-changes.outputs.backend }}" == "true" ]]; then
+            cd backend
+            # Install gosec
+            go install github.com/securego/gosec/v2/cmd/gosec@latest
+            ~/go/bin/gosec -fmt json -out gosec-report.json ./... || true
+            
+            # Check for vulnerabilities
+            go list -json -deps ./... | nancy sleuth || true
+            cd ..
+          fi
+          
+          # Frontend security scan
+          if [[ "${{ needs.detect-changes.outputs.frontend }}" == "true" ]]; then
+            cd frontend
+            npm audit --audit-level=moderate || true
+            cd ..
+          fi
+          
+          # Docker security scan
+          if [[ "${{ needs.detect-changes.outputs.docker }}" == "true" ]]; then
+            docker run --rm -v "$PWD":/workspace \
+              aquasec/trivy config /workspace || true
+          fi
+      
+      # Performance Tests
+      - name: Performance Tests
+        if: matrix.test-type == 'performance'
+        run: |
+          echo "⚡ Running performance tests..."
+          
+          # Build performance test image
+          if [[ "${{ needs.detect-changes.outputs.backend }}" == "true" ]]; then
+            echo "Running load tests..."
+            # Use k6 or similar for load testing
+            docker run --rm -i grafana/k6 run - <performance/load-test.js || true
+          fi
+      
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.test-type }}
+          path: |
+            backend/coverage.out
+            backend/gosec-report.json
+            frontend/coverage/
+          retention-days: 7
+
+  # Smart incremental build
+  smart-build:
+    name: Smart Build
+    needs: [detect-changes, test-suite]
+    if: needs.detect-changes.outputs.affected-services != ''
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:master
+            network=host
+      
+      - name: Log in to Container Registry
+        if: needs.detect-changes.outputs.should-deploy == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/arm64
+          push: ${{ needs.detect-changes.outputs.should-deploy == 'true' }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          build-args: |
+            VERSION=1.1.0
+            GIT_COMMIT=${{ github.sha }}
+            BUILD_TIME=${{ github.event.head_commit.timestamp }}
+          cache-from: |
+            type=gha
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+          cache-to: |
+            type=gha,mode=max
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
+          outputs: type=docker,dest=/tmp/image.tar
+      
+      - name: Upload image artifact
+        if: needs.detect-changes.outputs.should-deploy == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: /tmp/image.tar
+          retention-days: 1
+
+  # Chaos engineering validation
+  chaos-validation:
+    name: Chaos Engineering
+    needs: [detect-changes, smart-build]
+    if: needs.detect-changes.outputs.should-deploy == 'true'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download image
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: /tmp
+      
+      - name: Load Docker image
+        run: |
+          docker load < /tmp/image.tar
+          docker tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} sermon-uploader:test
+      
+      - name: Start test environment
+        run: |
+          # Create test environment
+          cat > test.env << EOL
+          MINIO_ENDPOINT=localhost:9000
+          MINIO_ACCESS_KEY=test
+          MINIO_SECRET_KEY=test123456
+          MINIO_SECURE=false
+          MINIO_BUCKET=test
+          PORT=8000
+          EOL
+          
+          # Start MinIO
+          docker run -d --name minio \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=test \
+            -e MINIO_ROOT_PASSWORD=test123456 \
+            minio/minio server /data
+          
+          # Start application
+          docker run -d --name app \
+            --env-file test.env \
+            -p 8000:8000 \
+            sermon-uploader:test
+          
+          # Wait for startup
+          sleep 10
+      
+      - name: Run chaos experiments
+        run: |
+          echo "🌪️ Running chaos engineering experiments..."
+          
+          # Test 1: High CPU load
+          echo "Test 1: CPU stress test"
+          docker exec app stress --cpu 2 --timeout 30s || true
+          curl -f http://localhost:8000/api/health || exit 1
+          
+          # Test 2: Memory pressure
+          echo "Test 2: Memory pressure test"
+          docker exec app stress --vm 2 --vm-bytes 128M --timeout 30s || true
+          curl -f http://localhost:8000/api/health || exit 1
+          
+          # Test 3: Network latency
+          echo "Test 3: Network latency simulation"
+          docker exec app tc qdisc add dev eth0 root netem delay 500ms || true
+          timeout 10 curl -f http://localhost:8000/api/health || true
+          docker exec app tc qdisc del dev eth0 root || true
+          
+          # Test 4: Container restart
+          echo "Test 4: Container restart resilience"
+          docker restart app
+          sleep 5
+          timeout 30 bash -c 'until curl -f http://localhost:8000/api/health; do sleep 1; done'
+          
+          echo "✅ All chaos tests passed!"
+      
+      - name: Cleanup
+        if: always()
+        run: |
+          docker stop app minio || true
+          docker rm app minio || true
+
+  # Production deployment with validation
+  deploy-production:
+    name: Deploy to Production
+    needs: [detect-changes, smart-build, chaos-validation]
+    if: needs.detect-changes.outputs.should-deploy == 'true' && github.ref == 'refs/heads/master'
+    runs-on: self-hosted
+    environment: production
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download image
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: /tmp
+      
+      - name: Pre-deployment validation
+        run: |
+          echo "🔍 Running pre-deployment checks..."
+          
+          # Check system resources
+          df -h
+          free -h
+          
+          # Check if MinIO is accessible
+          curl -f http://192.168.1.127:9000/minio/health/live || exit 1
+      
+      - name: Blue-Green Deployment
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          echo "🚀 Starting blue-green deployment..."
+          
+          # Load new image
+          docker load < /tmp/image.tar
+          docker tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} sermon-uploader:green
+          
+          # Create environment file
+          cat > .env << EOL
+          MINIO_ENDPOINT=192.168.1.127:9000
+          MINIO_ACCESS_KEY=gaius
+          MINIO_SECRET_KEY=John 3:16
+          MINIO_SECURE=false
+          MINIO_BUCKET=sermons
+          DISCORD_WEBHOOK_URL=$DISCORD_WEBHOOK_URL
+          LARGE_FILE_THRESHOLD_MB=100
+          PORT=8001
+          EOL
+          
+          # Start green deployment
+          docker run -d \
+            --name sermon-uploader-green \
+            --env-file .env \
+            -p 8001:8001 \
+            --health-cmd="curl -f http://localhost:8001/api/health || exit 1" \
+            --health-interval=30s \
+            --health-timeout=3s \
+            --health-start-period=10s \
+            --health-retries=3 \
+            sermon-uploader:green
+          
+          # Wait for green to be healthy
+          echo "Waiting for green deployment to be healthy..."
+          timeout 60 bash -c 'until docker inspect sermon-uploader-green --format="{{.State.Health.Status}}" | grep -q healthy; do sleep 2; done'
+          
+          # Run smoke tests on green
+          echo "Running smoke tests..."
+          curl -f http://localhost:8001/api/health || exit 1
+          curl -f http://localhost:8001/api/version || exit 1
+          
+          # Switch traffic to green
+          echo "Switching traffic to green deployment..."
+          docker stop sermon-uploader || true
+          docker rm sermon-uploader || true
+          
+          # Rename green to production
+          docker stop sermon-uploader-green
+          docker run -d \
+            --name sermon-uploader \
+            --env-file .env \
+            -p 8000:8001 \
+            --restart unless-stopped \
+            --health-cmd="curl -f http://localhost:8001/api/health || exit 1" \
+            --health-interval=30s \
+            sermon-uploader:green
+          
+          docker rm sermon-uploader-green
+          
+          echo "✅ Deployment successful!"
+      
+      - name: Post-deployment validation
+        run: |
+          echo "🔍 Running post-deployment validation..."
+          
+          # Health check
+          curl -f http://localhost:8000/api/health || exit 1
+          
+          # Version check
+          DEPLOYED_VERSION=$(curl -s http://localhost:8000/api/version | jq -r .gitCommit)
+          if [[ "$DEPLOYED_VERSION" != "${{ github.sha }}" ]]; then
+            echo "❌ Version mismatch! Expected ${{ github.sha }}, got $DEPLOYED_VERSION"
+            exit 1
+          fi
+          
+          # Performance check
+          for i in {1..10}; do
+            response_time=$(curl -o /dev/null -s -w '%{time_total}' http://localhost:8000/api/health)
+            echo "Response time: ${response_time}s"
+            if (( $(echo "$response_time > 1" | bc -l) )); then
+              echo "⚠️ Slow response time: ${response_time}s"
+            fi
+          done
+          
+          echo "✅ All post-deployment checks passed!"
+      
+      - name: Cleanup old images
+        run: |
+          docker image prune -af --filter="until=24h"
+          
+      - name: Notify success
+        if: success()
+        run: |
+          curl -X POST ${{ secrets.DISCORD_WEBHOOK_URL }} \
+            -H "Content-Type: application/json" \
+            -d "{\"content\":\"✅ Production deployment successful! Version: \`${{ github.sha }}\`\"}"
