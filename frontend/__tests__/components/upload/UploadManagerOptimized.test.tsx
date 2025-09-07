@@ -3,9 +3,17 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { UploadManagerOptimized } from '@/components/upload/UploadManagerOptimized'
 
+// Define the file type for the mock
+type MockFile = {
+  id: string
+  file: File
+  status: string
+  progress: number
+}
+
 // Mock the custom hook
 const mockUseUploadQueueOptimized = {
-  files: [],
+  files: [] as MockFile[],
   isProcessing: false,
   addFiles: vi.fn(),
   removeFile: vi.fn(),
