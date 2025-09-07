@@ -2,7 +2,6 @@ package main
 
 import (
 	"log"
-	"os"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -89,8 +88,7 @@ func main() {
 	// Get presigned URL for part upload
 	multipart.Get("/presigned", multipartHandler.GetPresignedURL)
 	
-	// Proxy endpoint for actual part upload (handles HTTPS→MinIO)
-	multipart.Put("/proxy", multipartHandler.ProxyPartUpload)
+	// Note: Direct upload to MinIO using presigned URLs, no proxy needed
 	
 	// Complete multipart upload
 	multipart.Post("/complete", multipartHandler.CompleteMultipartUpload)
