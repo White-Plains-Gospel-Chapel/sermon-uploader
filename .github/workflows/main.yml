@@ -160,11 +160,19 @@ jobs:
           PORT=8000
           EOL
           
-          # Stop old container
+          # Stop old container with timeout and force removal
+          echo "Stopping old container..."
           docker stop sermon-uploader 2>/dev/null || true
-          docker rm sermon-uploader 2>/dev/null || true
+          docker rm -f sermon-uploader 2>/dev/null || true
+          
+          # Wait a moment for port to be released
+          sleep 2
+          
+          # Kill any process using port 8000 (in case container didn't stop cleanly)
+          sudo lsof -ti:8000 | xargs -r sudo kill -9 2>/dev/null || true
           
           # Run new container
+          echo "Starting new container..."
           docker run -d \
             --name sermon-uploader \
             --env-file .env \
