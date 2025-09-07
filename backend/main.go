@@ -98,7 +98,8 @@ func main() {
 
 	// Create Fiber app
 	app := fiber.New(fiber.Config{
-		BodyLimit: 2 * 1024 * 1024 * 1024, // 2GB limit for batch uploads of large WAV files
+		BodyLimit: 10 * 1024 * 1024 * 1024, // 10GB limit for batch uploads of large WAV files
+		StreamRequestBody: true, // Enable streaming for large uploads
 		ErrorHandler: func(ctx *fiber.Ctx, err error) error {
 			code := fiber.StatusInternalServerError
 			if e, ok := err.(*fiber.Error); ok {
@@ -112,12 +113,17 @@ func main() {
 	})
 
 	// Middleware
+	// CORS configuration that allows both CloudFlare domain and direct IP access
 	app.Use(cors.New(cors.Config{
-		AllowOrigins:     "*",
+		AllowOriginsFunc: func(origin string) bool {
+			// Allow all origins for now to bypass CloudFlare
+			// In production, you might want to restrict this to specific domains
+			return true
+		},
 		AllowMethods:     "GET,POST,PUT,DELETE,OPTIONS,HEAD,PATCH",
-		AllowHeaders:     "Origin,Content-Type,Accept,Authorization,Upload-Length,Upload-Offset,Upload-Metadata,Tus-Resumable,Upload-Checksum",
+		AllowHeaders:     "Origin,Content-Type,Accept,Authorization,Upload-Length,Upload-Offset,Upload-Metadata,Tus-Resumable,Upload-Checksum,X-Chunk-Index,X-Total-Chunks",
 		ExposeHeaders:    "Upload-Offset,Upload-Length,Tus-Resumable,Tus-Version,Tus-Max-Size,Tus-Extension,Tus-Checksum-Algorithm,Location",
-		AllowCredentials: true,
+		AllowCredentials: false, // Set to false to allow wildcard origins
 	}))
 
 	// Configure logger with Eastern Time
@@ -172,6 +178,26 @@ func main() {
 		api.Post("/upload/presigned-batch", h.GetPresignedURLsBatch)
 		api.Post("/upload/complete", h.ProcessUploadedFile)
 		api.Post("/check-duplicate", h.CheckDuplicate)
+		
+		// Proxy upload routes (to bypass browser Private Network Access restrictions)
+		api.Post("/upload/proxy", h.ProxyUpload)
+		api.Put("/upload/proxy", h.ProxyUpload)
+		api.Post("/upload/proxy-url", h.GetProxyUploadURL)
+		api.Put("/upload/stream", h.StreamProxyUpload)
+
+		// Direct MinIO upload routes (peer-to-peer, no CloudFlare)
+		api.Post("/upload/direct-minio", h.GetDirectMinIOUploadURL)
+		api.Post("/upload/direct-minio-batch", h.GetDirectMinIOUploadURLBatch)
+
+		// Streaming proxy upload routes (eliminates CORS issues)
+		api.Post("/upload/streaming-proxy-url", h.GetStreamingUploadURL)
+		api.Post("/upload/streaming-proxy-url-batch", h.GetStreamingUploadURLBatch)
+		api.Put("/upload/streaming-proxy", h.StreamingUploadProxy)
+
+		// Zero-memory streaming proxy (handles bulk uploads without freezing)
+		api.Post("/upload/zero-memory-url", h.GetZeroMemoryUploadURL)
+		api.Post("/upload/zero-memory-url-batch", h.GetZeroMemoryUploadURLBatch)
+		api.Put("/upload/zero-memory-proxy", h.ZeroMemoryStreamingProxy)
 
 		// Streaming upload routes with bit-perfect quality
 		api.Post("/upload/streaming", h.UploadStreamingFiles)

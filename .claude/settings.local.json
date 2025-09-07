@@ -42,7 +42,9 @@
       "WebSearch",
       "Bash(gh repo view:*)",
       "Read(/Users/gaius/Documents/WPGC Services/01-Sermon-Uploader/**)",
-      "Read(/Users/gaius/Documents/WPGC Services/01-Sermon-Uploader/API-Documentation/**)"
+      "Read(/Users/gaius/Documents/WPGC Services/01-Sermon-Uploader/API-Documentation/**)",
+      "Bash(cd:*)",
+      "Bash(rsync:*)"
     ],
     "deny": [],
     "ask": []

@@ -50,7 +50,10 @@ export function useUploadQueueOptimized() {
     }))
     
     queueRef.current.push(...uploadFiles)
-    processQueue()
+    alert(`📋 Files added to queue: ${uploadFiles.length}`)
+    
+    // Trigger processing in next tick to avoid dependency cycle
+    setTimeout(() => processQueue(), 0)
   }, [])
 
   const updateFile = useCallback((id: string, updates: Partial<UploadFile>) => {
@@ -71,10 +74,18 @@ export function useUploadQueueOptimized() {
   }, [])
 
   const processQueue = useCallback(async () => {
-    if (state.isProcessing || queueRef.current.length === 0) return
+    alert(`🔍 processQueue called, queue length: ${queueRef.current.length}`)
+    if (queueRef.current.length === 0) return
     if (!limiterRef.current) return
     
-    setState(prev => ({ ...prev, isProcessing: true }))
+    setState(prev => {
+      if (prev.isProcessing) {
+        alert('⏸️ Already processing, skipping')
+        return prev // Don't start if already processing
+      }
+      alert('🚀 Starting queue processing')
+      return { ...prev, isProcessing: true }
+    })
     
     const filesToProcess = [...queueRef.current]
     queueRef.current = []
@@ -97,9 +108,10 @@ export function useUploadQueueOptimized() {
     }
     
     setState(prev => ({ ...prev, isProcessing: false }))
-  }, [state.isProcessing])
+  }, [])
 
   const processBatchParallel = async (files: UploadFile[]) => {
+    alert(`📦 Starting batch processing for ${files.length} files`)
     // Mark all as checking
     files.forEach(({ id }) => updateFile(id, { status: 'checking' }))
     
@@ -118,10 +130,10 @@ export function useUploadQueueOptimized() {
         
         const result = batchResponse.results[uploadFile.file.name]
         
-        if (result.error) {
+        if (!result || !result.success) {
           updateFile(uploadFile.id, {
             status: 'error',
-            error: result.message || 'Upload failed'
+            error: 'Failed to get upload URL'
           })
           return
         }
@@ -141,7 +153,8 @@ export function useUploadQueueOptimized() {
           console.log(`🔄 Using direct MinIO upload to bypass CloudFlare 100MB limit`)
         }
         
-        await uploadSingleFile(uploadFile, result.uploadUrl)
+        alert(`🔄 Starting upload for ${uploadFile.file.name}`)
+        await uploadSingleFile(uploadFile, result.uploadUrl, result.uploadMethod)
       })
     )
     
@@ -158,12 +171,12 @@ export function useUploadQueueOptimized() {
         try {
           updateFile(uploadFile.id, { status: 'checking' })
           
-          const { uploadUrl, isDuplicate } = await uploadService.getPresignedURL(
+          const presignedResponse = await uploadService.getPresignedURL(
             uploadFile.file.name,
             uploadFile.file.size
           )
           
-          if (isDuplicate) {
+          if (presignedResponse.isDuplicate) {
             updateFile(uploadFile.id, {
               status: 'duplicate',
               progress: 100,
@@ -179,7 +192,7 @@ export function useUploadQueueOptimized() {
             console.log(`🔄 Using direct MinIO upload to bypass CloudFlare 100MB limit`)
           }
           
-          await uploadSingleFile(uploadFile, uploadUrl)
+          await uploadSingleFile(uploadFile, presignedResponse.uploadUrl, presignedResponse.uploadMethod)
         } catch (error) {
           updateFile(uploadFile.id, {
             status: 'error',
@@ -192,7 +205,7 @@ export function useUploadQueueOptimized() {
     await Promise.allSettled(uploadPromises)
   }
 
-  const uploadSingleFile = async (uploadFile: UploadFile, uploadUrl: string) => {
+  const uploadSingleFile = async (uploadFile: UploadFile, uploadUrl: string, uploadMethod?: string) => {
     const startTime = Date.now()
     let lastProgressTime = startTime
     let lastProgressBytes = 0
@@ -203,6 +216,7 @@ export function useUploadQueueOptimized() {
       await uploadService.uploadToMinIO(
         uploadFile.file,
         uploadUrl,
+        uploadMethod,
         (progress) => {
           const now = Date.now()
           const currentBytes = (uploadFile.file.size * progress) / 100

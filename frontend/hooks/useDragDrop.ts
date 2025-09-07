@@ -46,12 +46,14 @@ export function useDragDrop({ onDrop, accept }: UseDragDropOptions) {
     setDragCounter(0)
     
     const files = Array.from(e.dataTransfer.files)
+    alert(`🎯 Files dropped: ${files.length}`)
     
     if (accept && accept.length > 0) {
       const filteredFiles = files.filter(file => {
         const extension = `.${file.name.split('.').pop()?.toLowerCase()}`
         return accept.includes(extension)
       })
+      alert(`🎯 Filtered files: ${filteredFiles.length}`)
       onDrop(filteredFiles)
     } else {
       onDrop(files)

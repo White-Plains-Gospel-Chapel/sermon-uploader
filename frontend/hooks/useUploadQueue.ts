@@ -102,7 +102,7 @@ export function useUploadQueue() {
       }
       
       // Upload the file but don't call individual completion yet
-      const success = await uploadSingleFileForBatch(uploadFile, result.uploadUrl)
+      const success = await uploadSingleFileForBatch(uploadFile, result.uploadUrl, result.uploadMethod)
       if (success) {
         successfulUploads.push(uploadFile.file.name)
       }
@@ -130,12 +130,12 @@ export function useUploadQueue() {
       try {
         updateFile(uploadFile.id, { status: 'checking' })
         
-        const { uploadUrl, isDuplicate } = await uploadService.getPresignedURL(
+        const presignedResponse = await uploadService.getPresignedURL(
           uploadFile.file.name,
           uploadFile.file.size
         )
         
-        if (isDuplicate) {
+        if (presignedResponse.isDuplicate) {
           updateFile(uploadFile.id, {
             status: 'duplicate',
             progress: 100,
@@ -144,7 +144,7 @@ export function useUploadQueue() {
           continue
         }
         
-        await uploadSingleFile(uploadFile, uploadUrl)
+        await uploadSingleFile(uploadFile, presignedResponse.uploadUrl, presignedResponse.uploadMethod)
       } catch (error) {
         updateFile(uploadFile.id, {
           status: 'error',
@@ -154,13 +154,14 @@ export function useUploadQueue() {
     }
   }
 
-  const uploadSingleFile = async (uploadFile: UploadFile, uploadUrl: string) => {
+  const uploadSingleFile = async (uploadFile: UploadFile, uploadUrl: string, uploadMethod?: string) => {
     try {
       updateFile(uploadFile.id, { status: 'uploading', progress: 0 })
       
       await uploadService.uploadToMinIO(
         uploadFile.file,
         uploadUrl,
+        uploadMethod,
         (progress) => updateFile(uploadFile.id, { progress: Math.round(progress) })
       )
       
@@ -178,13 +179,14 @@ export function useUploadQueue() {
     }
   }
 
-  const uploadSingleFileForBatch = async (uploadFile: UploadFile, uploadUrl: string): Promise<boolean> => {
+  const uploadSingleFileForBatch = async (uploadFile: UploadFile, uploadUrl: string, uploadMethod?: string): Promise<boolean> => {
     try {
       updateFile(uploadFile.id, { status: 'uploading', progress: 0 })
       
       await uploadService.uploadToMinIO(
         uploadFile.file,
         uploadUrl,
+        uploadMethod,
         (progress) => updateFile(uploadFile.id, { progress: Math.round(progress) })
       )
       

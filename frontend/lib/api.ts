@@ -1,10 +1,13 @@
 // API configuration
 const getApiUrl = () => {
-  // In production, use the same host as the frontend
-  // In development, you might want to use a different port
+  // DUAL-DOMAIN ARCHITECTURE: Web app through CloudFlare, MinIO direct
+  // This allows global access while bypassing CloudFlare for uploads
   if (typeof window !== 'undefined') {
-    // Client-side: use current host
-    return `${window.location.protocol}//${window.location.host}`
+    // Use CloudFlare for web app API calls (better performance, protection)
+    const cloudflareUrl = process.env.NEXT_PUBLIC_CLOUDFLARE_URL || `${window.location.protocol}//${window.location.host}`
+    console.log('☁️ Using CloudFlare for API calls (web app)')
+    console.log('🎯 MinIO uploads will bypass CloudFlare directly')
+    return cloudflareUrl
   }
   // Server-side rendering (if needed)
   return process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
@@ -40,9 +43,12 @@ export const api = {
     return response.json()
   },
 
-  // Get presigned URL for direct upload to MinIO (includes duplicate check)
+  // Get presigned URL for upload (ZERO-MEMORY STREAMING - no memory usage)
   async getPresignedURL(filename: string, fileSize: number) {
-    const response = await fetch(`${API_BASE}/api/upload/presigned`, {
+    // Use zero-memory streaming proxy to handle bulk uploads without freezing
+    const endpoint = `${API_BASE}/api/upload/zero-memory-url`
+    
+    const response = await fetch(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -66,24 +72,24 @@ export const api = {
     return result
   },
 
-  // Get presigned URLs for multiple files at once (batch optimization)
+  // Get presigned URLs for multiple files at once (ZERO-MEMORY STREAMING)
   async getPresignedURLsBatch(files: Array<{filename: string, fileSize: number}>) {
-    const response = await fetch(`${API_BASE}/api/upload/presigned-batch`, {
+    // Use batch endpoint for zero-memory streaming URLs
+    const response = await fetch(`${API_BASE}/api/upload/zero-memory-url-batch`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ 
-        files: files.map(f => ({ filename: f.filename, fileSize: f.fileSize }))
-      })
+      body: JSON.stringify({ files })
     })
-
+    
     const result = await response.json()
-
+    
     if (!response.ok) {
       throw new Error(result.message || 'Failed to get batch upload URLs')
     }
-
+    
+    console.log(`🎯 Got ${result.success_count} zero-memory streaming URLs (no memory usage)`)
     return result
   },
 
@@ -103,14 +109,31 @@ export const api = {
     return response.json()
   },
 
-  // Upload directly to MinIO using presigned URL (supports both CloudFlare and direct MinIO)
-  async uploadToMinIO(file: File, presignedURL: string, onProgress?: (progress: number) => void) {
+  // Upload to MinIO using presigned URL or proxy endpoint
+  async uploadToMinIO(file: File, presignedURL: string, uploadMethod?: string, onProgress?: (progress: number) => void) {
+    // Add small delay for bulk uploads to prevent browser freeze
+    const isZeroMemory = presignedURL.includes('zero-memory')
+    if (isZeroMemory) {
+      await new Promise(resolve => setTimeout(resolve, 100)) // 100ms delay
+    }
     return new Promise<void>((resolve, reject) => {
       const xhr = new XMLHttpRequest()
 
-      // Detect if this is a direct MinIO upload (for better error handling)
-      const isDirect = presignedURL.includes('192.168.1.127:9000')
-      const uploadType = isDirect ? 'direct MinIO' : 'CloudFlare CDN'
+      // Better detection with logging
+      const isProxy = presignedURL.includes('/api/upload/proxy') || uploadMethod === 'backend_proxy'
+      const isZeroMemory = presignedURL.includes('zero-memory') || uploadMethod === 'zero_memory_streaming'
+      const isStreaming = presignedURL.includes('streaming-proxy') || uploadMethod === 'streaming_proxy'
+      const isDirect = presignedURL.includes('minio.') || presignedURL.includes(':9000') || uploadMethod === 'direct_minio'
+      const uploadType = isZeroMemory ? 'Zero-Memory Streaming (bulk safe)' : (isStreaming ? 'Streaming Proxy (no CORS)' : (isDirect ? 'Direct MinIO' : (isProxy ? 'Backend proxy' : 'CloudFlare CDN')))
+      
+      console.log('🔍 Upload Detection:', {
+        url: presignedURL,
+        method: uploadMethod,
+        isProxy,
+        isDirect,
+        uploadType,
+        fileSize: `${(file.size / 1024 / 1024).toFixed(1)} MB`
+      })
 
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable && onProgress) {
@@ -148,14 +171,41 @@ export const api = {
         reject(new Error(errorMsg))
       }
 
-      // Set appropriate timeout (longer for large files via direct MinIO)
-      xhr.timeout = isDirect ? 30 * 60 * 1000 : 10 * 60 * 1000 // 30min for direct, 10min for CloudFlare
+      // Set appropriate timeout (longer for large files)
+      const timeoutMinutes = Math.max(5, Math.ceil(file.size / (50 * 1024 * 1024))) // 1 min per 50MB, min 5 min
+      xhr.timeout = timeoutMinutes * 60 * 1000
 
-      xhr.open('PUT', presignedURL)
-      // Preserve original WAV quality - no compression headers
-      xhr.setRequestHeader('Content-Type', 'audio/wav')
+      // Use appropriate HTTP method based on upload type
+      if (isProxy) {
+        // For proxy uploads, we need to POST the file
+        xhr.open('PUT', presignedURL)
+        xhr.setRequestHeader('Content-Type', 'audio/wav')
+      } else {
+        // For presigned URLs, use PUT
+        xhr.open('PUT', presignedURL)
+        // Preserve original WAV quality - no compression headers
+        xhr.setRequestHeader('Content-Type', 'audio/wav')
+      }
       
-      console.log(`🚀 Starting upload via ${uploadType} (${(file.size / 1024 / 1024).toFixed(1)} MB)`)
+      console.log(`🚀 Starting ${uploadType} upload: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)`)
+      
+      // Add progress logging
+      let lastLoggedPercent = 0
+      xhr.upload.onprogress = (e) => {
+        if (onProgress) {
+          const progress = (e.loaded / e.total) * 100
+          onProgress(progress)
+        }
+        
+        if (e.lengthComputable) {
+          const percent = Math.floor((e.loaded / e.total) * 100)
+          if (percent > lastLoggedPercent && percent % 10 === 0) {
+            console.log(`📊 ${file.name}: ${percent}% uploaded`)
+            lastLoggedPercent = percent
+          }
+        }
+      }
+      
       xhr.send(file) // Send raw file data - no compression
     })
   },
@@ -248,7 +298,18 @@ export const api = {
 
 // WebSocket connection
 export const createWebSocket = () => {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const wsUrl = `${protocol}//${window.location.host}/ws`
-  return new WebSocket(wsUrl)
+  // Use direct Pi connection for WebSocket too
+  const bypassCloudFlare = true
+  
+  if (bypassCloudFlare) {
+    // Direct WebSocket to Pi
+    const directPiWs = process.env.NEXT_PUBLIC_DIRECT_PI_WS || 'ws://192.168.1.127:8000/ws'
+    console.log('🎯 WebSocket using direct Pi connection')
+    return new WebSocket(directPiWs)
+  } else {
+    // Through CloudFlare
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const wsUrl = `${protocol}//${window.location.host}/ws`
+    return new WebSocket(wsUrl)
+  }
 }

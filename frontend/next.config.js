@@ -6,6 +6,11 @@ const nextConfig = {
   experimental: {
     serverComponentsExternalPackages: [],
   },
+  webpack: (config, { isServer }) => {
+    // Disable webpack cache to avoid snapshot errors
+    config.cache = false;
+    return config;
+  },
 }
 
 module.exports = nextConfig

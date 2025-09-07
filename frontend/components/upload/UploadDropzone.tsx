@@ -25,6 +25,7 @@ export function UploadDropzone({ onFilesSelected, disabled = false }: UploadDrop
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || [])
+    alert(`🎯 Files selected in dropzone: ${files.length}`)
     onFilesSelected(files)
     // Reset input value to allow selecting the same file again
     e.target.value = ''
