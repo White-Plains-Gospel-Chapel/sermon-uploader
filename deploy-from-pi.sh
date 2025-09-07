@@ -5,6 +5,9 @@
 
 set -e
 
+# Ensure Go is in PATH if installed
+export PATH=$PATH:/usr/local/go/bin
+
 echo "🚀 Sermon Uploader Deployment Script"
 echo "====================================="
 echo "Running on: $(hostname)"
@@ -170,6 +173,16 @@ if command -v docker &> /dev/null && docker ps &> /dev/null; then
     
     # Build backend
     cd backend
+    
+    # Check if Go is installed
+    if ! command -v go &> /dev/null; then
+        echo "Go not found, installing Go..."
+        wget -q https://go.dev/dl/go1.23.0.linux-arm64.tar.gz
+        sudo tar -C /usr/local -xzf go1.23.0.linux-arm64.tar.gz
+        export PATH=$PATH:/usr/local/go/bin
+        rm go1.23.0.linux-arm64.tar.gz
+    fi
+    
     go mod tidy
     go build -o sermon-backend
     
@@ -188,6 +201,16 @@ else
     
     # Build backend
     cd backend
+    
+    # Check if Go is installed
+    if ! command -v go &> /dev/null; then
+        echo "Go not found, installing Go..."
+        wget -q https://go.dev/dl/go1.23.0.linux-arm64.tar.gz
+        sudo tar -C /usr/local -xzf go1.23.0.linux-arm64.tar.gz
+        export PATH=$PATH:/usr/local/go/bin
+        rm go1.23.0.linux-arm64.tar.gz
+    fi
+    
     go mod tidy
     go build -o sermon-backend
     
