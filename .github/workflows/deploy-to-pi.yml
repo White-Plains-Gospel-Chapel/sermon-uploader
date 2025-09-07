@@ -1,0 +1,175 @@
+name: Deploy to Raspberry Pi
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+    inputs:
+      deploy_type:
+        description: 'Deployment type'
+        required: true
+        default: 'backend'
+        type: choice
+        options:
+          - backend
+          - frontend
+          - both
+          - tls-setup
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.PI_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          echo "${{ secrets.PI_HOST }} ssh-rsa ${{ secrets.PI_HOST_KEY }}" > ~/.ssh/known_hosts
+
+      - name: Test SSH connection
+        run: |
+          ssh -i ~/.ssh/id_rsa gaius@${{ secrets.PI_HOST }} "echo 'SSH connection successful'"
+
+      - name: Deploy TLS Setup (if selected)
+        if: github.event.inputs.deploy_type == 'tls-setup' || github.event.inputs.deploy_type == ''
+        run: |
+          echo "🔐 Setting up TLS on Raspberry Pi..."
+          
+          # Copy setup script
+          scp -i ~/.ssh/id_rsa setup-on-pi.sh gaius@${{ secrets.PI_HOST }}:/home/gaius/
+          
+          # Run setup script
+          ssh -i ~/.ssh/id_rsa gaius@${{ secrets.PI_HOST }} << 'EOF'
+            chmod +x /home/gaius/setup-on-pi.sh
+            cd /home/gaius
+            ./setup-on-pi.sh
+          EOF
+
+      - name: Deploy Backend
+        if: github.event.inputs.deploy_type == 'backend' || github.event.inputs.deploy_type == 'both' || github.event.inputs.deploy_type == ''
+        run: |
+          echo "📦 Deploying backend to Raspberry Pi..."
+          
+          # Copy backend files
+          rsync -avz -e "ssh -i ~/.ssh/id_rsa" \
+            --exclude 'node_modules' \
+            --exclude '.git' \
+            --exclude '*.test.*' \
+            ./backend/ gaius@${{ secrets.PI_HOST }}:/home/gaius/sermon-uploader/backend/
+          
+          # Copy multipart handler
+          scp -i ~/.ssh/id_rsa \
+            backend/handlers/multipart_upload.go \
+            gaius@${{ secrets.PI_HOST }}:/home/gaius/sermon-uploader/backend/handlers/
+          
+          # Deploy and restart backend
+          ssh -i ~/.ssh/id_rsa gaius@${{ secrets.PI_HOST }} << 'EOF'
+            cd /home/gaius/sermon-uploader
+            
+            # Update main.go with multipart routes
+            if [ -f backend/main_updated.go ]; then
+              mv backend/main.go backend/main.go.backup
+              mv backend/main_updated.go backend/main.go
+            fi
+            
+            # Rebuild backend
+            cd backend
+            go mod tidy
+            go build -o sermon-backend
+            
+            # Restart using docker-compose
+            cd ..
+            docker-compose -f docker-compose.pi.yml stop backend
+            docker-compose -f docker-compose.pi.yml up -d backend
+            
+            # Check if backend is running
+            sleep 5
+            curl -k https://localhost:8000/api/health || echo "Backend health check failed"
+          EOF
+
+      - name: Deploy Frontend Updates
+        if: github.event.inputs.deploy_type == 'frontend' || github.event.inputs.deploy_type == 'both'
+        run: |
+          echo "🎨 Deploying frontend updates..."
+          
+          # Copy frontend files
+          rsync -avz -e "ssh -i ~/.ssh/id_rsa" \
+            --exclude 'node_modules' \
+            --exclude '.next' \
+            --exclude '.git' \
+            ./frontend/lib/chunked-uploader.ts \
+            ./frontend/lib/api.ts \
+            gaius@${{ secrets.PI_HOST }}:/home/gaius/sermon-uploader/frontend/lib/
+
+      - name: Run Tests
+        run: |
+          echo "🧪 Running deployment tests..."
+          
+          ssh -i ~/.ssh/id_rsa gaius@${{ secrets.PI_HOST }} << 'EOF'
+            # Test HTTPS is working
+            echo "Testing MinIO HTTPS..."
+            if curl -k -s https://localhost:9000/minio/health/live | grep -q "OK"; then
+              echo "✅ MinIO HTTPS is working"
+            else
+              echo "❌ MinIO HTTPS test failed"
+              docker logs sermon-minio --tail 20
+            fi
+            
+            # Test backend multipart endpoints
+            echo "Testing backend endpoints..."
+            if curl -k -s https://localhost:8000/api/health | grep -q "healthy"; then
+              echo "✅ Backend is healthy"
+            else
+              echo "❌ Backend health check failed"
+              docker logs sermon-backend --tail 20
+            fi
+            
+            # Test multipart init endpoint
+            echo "Testing multipart upload endpoint..."
+            curl -k -X POST https://localhost:8000/api/upload/multipart/init \
+              -H "Content-Type: application/json" \
+              -d '{"filename":"test.wav","fileSize":1048576,"fileHash":"test123"}' \
+              -w "\nHTTP Status: %{http_code}\n" || true
+          EOF
+
+      - name: Send Discord Notification
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            COLOR=3066993  # Green
+            TITLE="✅ Deployment Successful"
+            DESC="Successfully deployed to Raspberry Pi"
+          else
+            COLOR=15158332  # Red
+            TITLE="❌ Deployment Failed"
+            DESC="Deployment to Raspberry Pi failed. Check logs."
+          fi
+          
+          curl -X POST ${{ secrets.DISCORD_WEBHOOK_URL }} \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"embeds\": [{
+                \"title\": \"$TITLE\",
+                \"description\": \"$DESC\",
+                \"color\": $COLOR,
+                \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\"
+              }]
+            }"
+
+      - name: Output Access URLs
+        if: success()
+        run: |
+          echo "🎉 Deployment Complete!"
+          echo ""
+          echo "Access URLs:"
+          echo "  MinIO API:     https://${{ secrets.PI_HOST }}:9000"
+          echo "  MinIO Console: https://${{ secrets.PI_HOST }}:9001"
+          echo "  Backend API:   https://${{ secrets.PI_HOST }}:8000"
+          echo ""
+          echo "Test multipart upload:"
+          echo "  curl -k https://${{ secrets.PI_HOST }}:8000/api/health"
