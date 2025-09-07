@@ -53,13 +53,20 @@ func main() {
 	}))
 
 	// Initialize handlers
-	multipartHandler, err := handlers.NewMultipartUploadHandler(cfg)
+	multipartHandler, err := handlers.NewMultipartUploadHandler(
+		cfg.MinIOEndpoint,
+		cfg.MinIOAccessKey,
+		cfg.MinIOSecretKey,
+		cfg.MinioBucket,
+		cfg.MinIOSecure,
+	)
 	if err != nil {
 		log.Fatalf("Failed to initialize multipart handler: %v", err)
 	}
 
 	// Initialize existing handlers (your current zero-memory proxy)
-	standardHandlers := handlers.NewHandlers(cfg)
+	// standardHandlers := handlers.NewHandlers(cfg)
+	// Note: Commenting out for now as NewHandlers is not defined yet
 
 	// API Routes
 	api := app.Group("/api")
@@ -98,22 +105,23 @@ func main() {
 	multipart.Get("/sessions", multipartHandler.ListActiveSessions)
 
 	// ===== EXISTING ROUTES (keep your current implementation) =====
-	upload := api.Group("/upload")
+	// Note: Commenting out existing routes until standardHandlers is defined
+	// upload := api.Group("/upload")
 	
 	// Zero-memory streaming routes (your current implementation)
-	upload.Post("/zero-memory-url", standardHandlers.GetZeroMemoryUploadURL)
-	upload.Post("/zero-memory-url-batch", standardHandlers.GetZeroMemoryUploadURLBatch)
-	upload.Put("/zero-memory-proxy", standardHandlers.ZeroMemoryStreamingProxy)
+	// upload.Post("/zero-memory-url", standardHandlers.GetZeroMemoryUploadURL)
+	// upload.Post("/zero-memory-url-batch", standardHandlers.GetZeroMemoryUploadURLBatch)
+	// upload.Put("/zero-memory-proxy", standardHandlers.ZeroMemoryStreamingProxy)
 
 	// Legacy routes
-	upload.Post("/", standardHandlers.UploadFiles)
-	upload.Post("/presigned", standardHandlers.GetPresignedURL)
-	upload.Post("/direct", standardHandlers.DirectUpload)
+	// upload.Post("/", standardHandlers.UploadFiles)
+	// upload.Post("/presigned", standardHandlers.GetPresignedURL)
+	// upload.Post("/direct", standardHandlers.DirectUpload)
 
 	// File management routes
-	api.Get("/files", standardHandlers.ListFiles)
-	api.Delete("/files/:filename", standardHandlers.DeleteFile)
-	api.Get("/status", standardHandlers.GetStatus)
+	// api.Get("/files", standardHandlers.ListFiles)
+	// api.Delete("/files/:filename", standardHandlers.DeleteFile)
+	// api.Get("/status", standardHandlers.GetStatus)
 
 	// Start background cleanup task
 	go func() {

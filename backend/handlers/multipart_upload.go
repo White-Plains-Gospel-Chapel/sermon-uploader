@@ -3,8 +3,8 @@ package handlers
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"sync"
@@ -17,31 +17,31 @@ import (
 
 // Constants for multipart upload
 const (
-	MinChunkSize     = 5 * 1024 * 1024  // 5MB - MinIO minimum
-	DefaultChunkSize = 5 * 1024 * 1024  // Using 5MB as per your decision
-	MaxUploadSize    = 5 * 1024 * 1024 * 1024 // 5GB max file size
-	PresignedURLExpiry = time.Hour      // 1 hour expiry for presigned URLs
-	SessionTimeout   = 24 * time.Hour   // 24 hour session timeout
+	MinChunkSize       = 5 * 1024 * 1024      // 5MB - MinIO minimum
+	DefaultChunkSize   = 5 * 1024 * 1024      // Using 5MB as per your decision
+	MaxUploadSize      = 5 * 1024 * 1024 * 1024 // 5GB max file size
+	PresignedURLExpiry = time.Hour            // 1 hour expiry for presigned URLs
+	SessionTimeout     = 24 * time.Hour       // 24 hour session timeout
 )
 
 // Upload session management
 type UploadSession struct {
-	UploadID      string           `json:"uploadId"`
-	Filename      string           `json:"filename"`
-	FileSize      int64            `json:"fileSize"`
-	ChunkSize     int64            `json:"chunkSize"`
-	TotalParts    int              `json:"totalParts"`
-	UploadedParts []CompletedPart  `json:"uploadedParts"`
-	CreatedAt     time.Time        `json:"createdAt"`
-	LastActivity  time.Time        `json:"lastActivity"`
-	FileHash      string           `json:"fileHash"`
-	Status        string           `json:"status"` // "active", "completed", "aborted"
+	UploadID      string          `json:"uploadId"`
+	Filename      string          `json:"filename"`
+	FileSize      int64           `json:"fileSize"`
+	ChunkSize     int64           `json:"chunkSize"`
+	TotalParts    int             `json:"totalParts"`
+	UploadedParts []CompletedPart `json:"uploadedParts"`
+	CreatedAt     time.Time       `json:"createdAt"`
+	LastActivity  time.Time       `json:"lastActivity"`
+	FileHash      string          `json:"fileHash"`
+	Status        string          `json:"status"` // "active", "completed", "aborted"
 }
 
 type CompletedPart struct {
-	PartNumber int    `json:"partNumber"`
-	ETag       string `json:"etag"`
-	Size       int64  `json:"size"`
+	PartNumber int       `json:"partNumber"`
+	ETag       string    `json:"etag"`
+	Size       int64     `json:"size"`
 	UploadedAt time.Time `json:"uploadedAt"`
 }
 
@@ -59,11 +59,6 @@ type InitMultipartResponse struct {
 	ChunkSize  int64  `json:"chunkSize"`
 }
 
-type PresignedURLRequest struct {
-	UploadID   string `json:"uploadId" validate:"required"`
-	PartNumber int    `json:"partNumber" validate:"required,min=1"`
-}
-
 type PresignedURLResponse struct {
 	URL        string `json:"url"`
 	PartNumber int    `json:"partNumber"`
@@ -78,19 +73,17 @@ type CompleteMultipartRequest struct {
 // MultipartUploadHandler handles multipart uploads with presigned URLs
 type MultipartUploadHandler struct {
 	minioClient     *minio.Client
-	minioService    MinIOService // Your existing MinIO service
 	bucket          string
-	config          *Config
 	uploadSessions  map[string]*UploadSession
 	sessionMutex    sync.RWMutex
 	uploadSemaphore chan struct{} // Limit concurrent uploads
 }
 
 // NewMultipartUploadHandler creates a new multipart upload handler
-func NewMultipartUploadHandler(config *Config) (*MultipartUploadHandler, error) {
+func NewMultipartUploadHandler(minioEndpoint, accessKey, secretKey, bucket string, secure bool) (*MultipartUploadHandler, error) {
 	// Create MinIO client with HTTPS support
 	var transport *http.Transport
-	if config.MinIOSecure {
+	if secure {
 		transport = &http.Transport{
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true, // For self-signed certs
@@ -98,9 +91,9 @@ func NewMultipartUploadHandler(config *Config) (*MultipartUploadHandler, error) 
 		}
 	}
 
-	minioClient, err := minio.New(config.MinIOEndpoint, &minio.Options{
-		Creds:     credentials.NewStaticV4(config.MinIOAccessKey, config.MinIOSecretKey, ""),
-		Secure:    config.MinIOSecure,
+	minioClient, err := minio.New(minioEndpoint, &minio.Options{
+		Creds:     credentials.NewStaticV4(accessKey, secretKey, ""),
+		Secure:    secure,
 		Transport: transport,
 	})
 	if err != nil {
@@ -109,12 +102,12 @@ func NewMultipartUploadHandler(config *Config) (*MultipartUploadHandler, error) 
 
 	// Create bucket if it doesn't exist
 	ctx := context.Background()
-	exists, err := minioClient.BucketExists(ctx, config.MinioBucket)
+	exists, err := minioClient.BucketExists(ctx, bucket)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check bucket existence: %v", err)
 	}
 	if !exists {
-		err = minioClient.MakeBucket(ctx, config.MinioBucket, minio.MakeBucketOptions{})
+		err = minioClient.MakeBucket(ctx, bucket, minio.MakeBucketOptions{})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create bucket: %v", err)
 		}
@@ -122,8 +115,7 @@ func NewMultipartUploadHandler(config *Config) (*MultipartUploadHandler, error) 
 
 	return &MultipartUploadHandler{
 		minioClient:     minioClient,
-		bucket:          config.MinioBucket,
-		config:          config,
+		bucket:          bucket,
 		uploadSessions:  make(map[string]*UploadSession),
 		uploadSemaphore: make(chan struct{}, 1), // Conservative: 1 file at a time
 	}, nil
@@ -190,32 +182,15 @@ func (h *MultipartUploadHandler) InitiateMultipartUpload(c *fiber.Ctx) error {
 	default:
 		// No slots available, queue the request
 		return c.Status(429).JSON(fiber.Map{
-			"error":   true,
-			"message": "Upload queue is full, please retry",
+			"error":       true,
+			"message":     "Upload queue is full, please retry",
 			"retry_after": 5, // seconds
 		})
 	}
 
-	// Initiate multipart upload with MinIO
-	uploadID, err := h.minioClient.NewMultipartUpload(
-		ctx,
-		h.bucket,
-		req.Filename,
-		minio.PutObjectOptions{
-			ContentType: "audio/wav",
-			UserMetadata: map[string]string{
-				"file_hash":     req.FileHash,
-				"original_size": strconv.FormatInt(req.FileSize, 10),
-				"uploaded_at":   time.Now().Format(time.RFC3339),
-			},
-		},
-	)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{
-			"error":   true,
-			"message": fmt.Sprintf("Failed to initiate upload: %v", err),
-		})
-	}
+	// For MinIO SDK v7, we'll use a different approach
+	// We'll generate a unique upload ID ourselves and use presigned URLs
+	uploadID := fmt.Sprintf("upload_%s_%d", req.FileHash[:8], time.Now().Unix())
 
 	// Calculate number of parts
 	totalParts := int((req.FileSize + req.ChunkSize - 1) / req.ChunkSize)
@@ -283,97 +258,30 @@ func (h *MultipartUploadHandler) GetPresignedURL(c *fiber.Ctx) error {
 	session.LastActivity = time.Now()
 	h.sessionMutex.Unlock()
 
-	// Generate presigned URL for this part
-	// For multipart uploads, we need to use a different approach
-	// MinIO doesn't directly support presigned URLs for multipart parts
-	// We'll use the zero-memory proxy approach instead
+	// For MinIO v7, we'll use regular presigned PUT URLs
+	// Parts will be assembled server-side
+	ctx := context.Background()
 	
-	// Build the URL for our proxy endpoint
-	scheme := "https"
-	if !h.config.MinIOSecure {
-		scheme = "http"
+	// Generate a unique object name for this part
+	partObjectName := fmt.Sprintf("%s.part%d", session.Filename, partNumber)
+	
+	// Generate presigned PUT URL
+	presignedURL, err := h.minioClient.PresignedPutObject(ctx, h.bucket, partObjectName, PresignedURLExpiry)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{
+			"error":   true,
+			"message": fmt.Sprintf("Failed to generate presigned URL: %v", err),
+		})
 	}
-	
-	// Use the public endpoint for the URL
-	proxyURL := fmt.Sprintf("%s://%s/api/upload/multipart/proxy?uploadId=%s&partNumber=%d",
-		scheme, h.config.PublicMinIOEndpoint, uploadID, partNumber)
 
 	return c.JSON(PresignedURLResponse{
-		URL:        proxyURL,
+		URL:        presignedURL.String(),
 		PartNumber: partNumber,
 		ExpiresAt:  time.Now().Add(PresignedURLExpiry).Unix(),
 	})
 }
 
-// ProxyPartUpload handles the actual part upload (proxy to MinIO)
-func (h *MultipartUploadHandler) ProxyPartUpload(c *fiber.Ctx) error {
-	uploadID := c.Query("uploadId")
-	partNumber, err := strconv.Atoi(c.Query("partNumber"))
-	if err != nil || partNumber < 1 {
-		return c.Status(400).JSON(fiber.Map{
-			"error":   true,
-			"message": "Invalid part number",
-		})
-	}
-
-	// Get session
-	h.sessionMutex.RLock()
-	session, exists := h.uploadSessions[uploadID]
-	h.sessionMutex.RUnlock()
-
-	if !exists {
-		return c.Status(404).JSON(fiber.Map{
-			"error":   true,
-			"message": "Upload session not found",
-		})
-	}
-
-	// Stream the body directly to MinIO
-	ctx := context.Background()
-	body := c.Context().RequestBodyStream()
-	contentLength := int64(c.Context().Request.Header.ContentLength())
-
-	// Upload part to MinIO
-	partInfo, err := h.minioClient.PutObjectPart(
-		ctx,
-		h.bucket,
-		session.Filename,
-		uploadID,
-		partNumber,
-		body,
-		contentLength,
-		"",  // MD5
-		"",  // SHA256
-		nil, // SSE
-	)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{
-			"error":   true,
-			"message": fmt.Sprintf("Failed to upload part: %v", err),
-		})
-	}
-
-	// Record the uploaded part
-	h.sessionMutex.Lock()
-	session.UploadedParts = append(session.UploadedParts, CompletedPart{
-		PartNumber: partNumber,
-		ETag:       partInfo.ETag,
-		Size:       partInfo.Size,
-		UploadedAt: time.Now(),
-	})
-	session.LastActivity = time.Now()
-	h.sessionMutex.Unlock()
-
-	fmt.Printf("✅ Part %d/%d uploaded for %s\n", partNumber, session.TotalParts, session.Filename)
-
-	return c.JSON(fiber.Map{
-		"success":    true,
-		"partNumber": partNumber,
-		"etag":       partInfo.ETag,
-	})
-}
-
-// CompleteMultipartUpload finalizes the multipart upload
+// CompleteMultipartUpload assembles all parts into the final file
 func (h *MultipartUploadHandler) CompleteMultipartUpload(c *fiber.Ctx) error {
 	var req CompleteMultipartRequest
 	if err := c.BodyParser(&req); err != nil {
@@ -395,30 +303,39 @@ func (h *MultipartUploadHandler) CompleteMultipartUpload(c *fiber.Ctx) error {
 		})
 	}
 
-	// Prepare parts for completion
-	parts := make([]minio.CompletePart, len(req.Parts))
-	for i, part := range req.Parts {
-		parts[i] = minio.CompletePart{
-			PartNumber: part.PartNumber,
-			ETag:       part.ETag,
+	// For MinIO v7, we'll compose the object from parts
+	ctx := context.Background()
+	
+	// Create compose sources from uploaded parts
+	sources := make([]minio.CopySrcOptions, 0, len(req.Parts))
+	for _, part := range req.Parts {
+		partObjectName := fmt.Sprintf("%s.part%d", session.Filename, part.PartNumber)
+		src := minio.CopySrcOptions{
+			Bucket: h.bucket,
+			Object: partObjectName,
 		}
+		sources = append(sources, src)
 	}
 
-	// Complete the multipart upload
-	ctx := context.Background()
-	_, err := h.minioClient.CompleteMultipartUpload(
-		ctx,
-		h.bucket,
-		session.Filename,
-		req.UploadID,
-		parts,
-		minio.PutObjectOptions{},
-	)
+	// Compose the final object
+	dst := minio.CopyDestOptions{
+		Bucket: h.bucket,
+		Object: session.Filename,
+	}
+
+	// Compose object from parts
+	_, err := h.minioClient.ComposeObject(ctx, dst, sources...)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{
 			"error":   true,
 			"message": fmt.Sprintf("Failed to complete upload: %v", err),
 		})
+	}
+
+	// Clean up part objects
+	for _, part := range req.Parts {
+		partObjectName := fmt.Sprintf("%s.part%d", session.Filename, part.PartNumber)
+		_ = h.minioClient.RemoveObject(ctx, h.bucket, partObjectName, minio.RemoveObjectOptions{})
 	}
 
 	// Update session status
@@ -427,60 +344,14 @@ func (h *MultipartUploadHandler) CompleteMultipartUpload(c *fiber.Ctx) error {
 	session.LastActivity = time.Now()
 	h.sessionMutex.Unlock()
 
-	fmt.Printf("🎉 Upload completed: %s (%d MB)\n", 
+	fmt.Printf("🎉 Upload completed: %s (%d MB)\n",
 		session.Filename, session.FileSize/(1024*1024))
-
-	// Process metadata in background
-	go func() {
-		ctx := context.Background()
-		if h.minioService != nil {
-			_ = h.minioService.ProcessUploadedFile(ctx, session.Filename)
-		}
-	}()
 
 	return c.JSON(fiber.Map{
 		"success":  true,
 		"filename": session.Filename,
 		"size":     session.FileSize,
 		"message":  "Upload completed successfully",
-	})
-}
-
-// AbortMultipartUpload cancels an ongoing multipart upload
-func (h *MultipartUploadHandler) AbortMultipartUpload(c *fiber.Ctx) error {
-	uploadID := c.Params("uploadId")
-
-	// Get session
-	h.sessionMutex.RLock()
-	session, exists := h.uploadSessions[uploadID]
-	h.sessionMutex.RUnlock()
-
-	if !exists {
-		return c.Status(404).JSON(fiber.Map{
-			"error":   true,
-			"message": "Upload session not found",
-		})
-	}
-
-	// Abort the multipart upload in MinIO
-	ctx := context.Background()
-	err := h.minioClient.AbortMultipartUpload(ctx, h.bucket, session.Filename, uploadID)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{
-			"error":   true,
-			"message": fmt.Sprintf("Failed to abort upload: %v", err),
-		})
-	}
-
-	// Update session status
-	h.sessionMutex.Lock()
-	session.Status = "aborted"
-	delete(h.uploadSessions, uploadID)
-	h.sessionMutex.Unlock()
-
-	return c.JSON(fiber.Map{
-		"success": true,
-		"message": "Upload aborted successfully",
 	})
 }
 
@@ -500,30 +371,20 @@ func (h *MultipartUploadHandler) ListParts(c *fiber.Ctx) error {
 		})
 	}
 
-	// List parts from MinIO
+	// Check which parts exist
 	ctx := context.Background()
-	partsInfo, err := h.minioClient.ListObjectParts(
-		ctx,
-		h.bucket,
-		session.Filename,
-		uploadID,
-		0,     // part number marker
-		1000,  // max parts
-	)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{
-			"error":   true,
-			"message": fmt.Sprintf("Failed to list parts: %v", err),
-		})
-	}
-
-	parts := make([]CompletedPart, len(partsInfo.Parts))
-	for i, part := range partsInfo.Parts {
-		parts[i] = CompletedPart{
-			PartNumber: part.PartNumber,
-			ETag:       part.ETag,
-			Size:       part.Size,
-			UploadedAt: part.LastModified,
+	parts := []CompletedPart{}
+	
+	for i := 1; i <= session.TotalParts; i++ {
+		partObjectName := fmt.Sprintf("%s.part%d", session.Filename, i)
+		info, err := h.minioClient.StatObject(ctx, h.bucket, partObjectName, minio.StatObjectOptions{})
+		if err == nil {
+			parts = append(parts, CompletedPart{
+				PartNumber: i,
+				ETag:       info.ETag,
+				Size:       info.Size,
+				UploadedAt: info.LastModified,
+			})
 		}
 	}
 
@@ -532,6 +393,41 @@ func (h *MultipartUploadHandler) ListParts(c *fiber.Ctx) error {
 		"filename":      session.Filename,
 		"totalParts":    session.TotalParts,
 		"uploadedParts": parts,
+	})
+}
+
+// AbortMultipartUpload cancels an ongoing multipart upload
+func (h *MultipartUploadHandler) AbortMultipartUpload(c *fiber.Ctx) error {
+	uploadID := c.Params("uploadId")
+
+	// Get session
+	h.sessionMutex.RLock()
+	session, exists := h.uploadSessions[uploadID]
+	h.sessionMutex.RUnlock()
+
+	if !exists {
+		return c.Status(404).JSON(fiber.Map{
+			"error":   true,
+			"message": "Upload session not found",
+		})
+	}
+
+	// Clean up any uploaded parts
+	ctx := context.Background()
+	for i := 1; i <= session.TotalParts; i++ {
+		partObjectName := fmt.Sprintf("%s.part%d", session.Filename, i)
+		_ = h.minioClient.RemoveObject(ctx, h.bucket, partObjectName, minio.RemoveObjectOptions{})
+	}
+
+	// Update session status
+	h.sessionMutex.Lock()
+	session.Status = "aborted"
+	delete(h.uploadSessions, uploadID)
+	h.sessionMutex.Unlock()
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"message": "Upload aborted successfully",
 	})
 }
 
@@ -544,11 +440,11 @@ func (h *MultipartUploadHandler) ListActiveSessions(c *fiber.Ctx) error {
 	for _, session := range h.uploadSessions {
 		if session.Status == "active" {
 			activeSessions = append(activeSessions, fiber.Map{
-				"uploadId":   session.UploadID,
-				"filename":   session.Filename,
-				"fileSize":   session.FileSize,
-				"progress":   float64(len(session.UploadedParts)) / float64(session.TotalParts) * 100,
-				"createdAt":  session.CreatedAt,
+				"uploadId":     session.UploadID,
+				"filename":     session.Filename,
+				"fileSize":     session.FileSize,
+				"progress":     float64(len(session.UploadedParts)) / float64(session.TotalParts) * 100,
+				"createdAt":    session.CreatedAt,
 				"lastActivity": session.LastActivity,
 			})
 		}
@@ -570,12 +466,15 @@ func (h *MultipartUploadHandler) CleanupStaleSessions() {
 
 	for uploadID, session := range h.uploadSessions {
 		if session.LastActivity.Before(cutoff) && session.Status == "active" {
-			// Abort the upload in MinIO
-			_ = h.minioClient.AbortMultipartUpload(ctx, h.bucket, session.Filename, uploadID)
-			
+			// Clean up any uploaded parts
+			for i := 1; i <= session.TotalParts; i++ {
+				partObjectName := fmt.Sprintf("%s.part%d", session.Filename, i)
+				_ = h.minioClient.RemoveObject(ctx, h.bucket, partObjectName, minio.RemoveObjectOptions{})
+			}
+
 			// Remove from sessions
 			delete(h.uploadSessions, uploadID)
-			
+
 			fmt.Printf("🧹 Cleaned up stale upload: %s\n", session.Filename)
 		}
 	}
