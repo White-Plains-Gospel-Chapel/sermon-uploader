@@ -308,8 +308,8 @@ func (h *Handlers) GetPresignedURLsBatch(c *fiber.Ctx) error {
 			fileResult["message"] = "File already exists"
 			duplicateCount++
 		} else {
-			// Generate smart presigned URL based on file size
-			presignedURL, isLargeFile, err := h.minioService.GeneratePresignedUploadURLSmart(fileReq.Filename, fileReq.FileSize, time.Hour)
+			// Generate smart presigned URL based on file size with CORS support
+			presignedURL, isLargeFile, err := h.minioService.GeneratePresignedUploadURLWithCORS(fileReq.Filename, fileReq.FileSize, time.Hour)
 			if err != nil {
 				fileResult["error"] = true
 				fileResult["message"] = "Failed to generate upload URL"
