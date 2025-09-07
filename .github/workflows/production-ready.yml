@@ -148,7 +148,7 @@ jobs:
         run: |
           echo "🔗 Running integration tests..."
           # Start test containers
-          docker-compose -f docker-compose.test.yml up -d
+          docker compose -f docker-compose.test.yml up -d 2>/dev/null || docker-compose -f docker-compose.test.yml up -d
           sleep 10
           
           # Run integration test suite
@@ -159,7 +159,7 @@ jobs:
           fi
           
           # Cleanup
-          docker-compose -f docker-compose.test.yml down
+          docker compose -f docker-compose.test.yml down 2>/dev/null || docker-compose -f docker-compose.test.yml down
       
       # Security Tests
       - name: Security Scanning
