@@ -1,0 +1,100 @@
+name: Deploy to Pi (Self-Hosted Runner)
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+jobs:
+  # Test phase runs on GitHub's infrastructure
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.23'
+      
+      - name: Test backend
+        working-directory: ./backend
+        run: |
+          go mod verify
+          go test ./... -v
+      
+      - name: Build backend
+        working-directory: ./backend
+        run: |
+          go build -o sermon-backend main.go
+          echo "✅ Backend builds successfully"
+
+  # Deploy phase runs on YOUR Raspberry Pi!
+  deploy:
+    needs: test
+    runs-on: self-hosted  # This runs on your Pi!
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Deploy to local Pi
+        run: |
+          echo "🚀 Deploying on Raspberry Pi (self-hosted runner)"
+          echo "Current directory: $(pwd)"
+          echo "Hostname: $(hostname)"
+          
+          # We're already on the Pi, so just deploy locally!
+          cd /home/gaius/sermon-uploader
+          
+          # Pull latest code
+          git pull origin master
+          
+          # Run deployment
+          if [ -f deploy-from-pi.sh ]; then
+            chmod +x deploy-from-pi.sh
+            ./deploy-from-pi.sh
+          else
+            # Manual deployment steps
+            echo "📦 Building backend..."
+            cd backend
+            go build -o sermon-backend main.go
+            
+            # Restart services
+            echo "🔄 Restarting services..."
+            if command -v docker-compose &> /dev/null; then
+              cd ..
+              docker-compose -f docker-compose.pi.yml down
+              docker-compose -f docker-compose.pi.yml up -d
+            else
+              # Run without Docker
+              pkill sermon-backend || true
+              nohup ./sermon-backend > ~/backend.log 2>&1 &
+            fi
+          fi
+          
+          # Health check
+          sleep 5
+          if curl -s http://localhost:8000/api/health > /dev/null; then
+            echo "✅ Backend is healthy!"
+          else
+            echo "⚠️ Backend health check failed"
+            exit 1
+          fi
+          
+      - name: Post-deployment summary
+        run: |
+          echo "## 🎉 Deployment Successful!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Deployed to: $(hostname) at $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Service URLs:" >> $GITHUB_STEP_SUMMARY
+          echo "- Backend: http://192.168.1.127:8000" >> $GITHUB_STEP_SUMMARY
+          echo "- MinIO: http://192.168.1.127:9000" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Test the deployment:" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo 'curl http://192.168.1.127:8000/api/health' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

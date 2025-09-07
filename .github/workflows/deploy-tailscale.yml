@@ -1,0 +1,80 @@
+name: Deploy via Tailscale VPN
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          # You need to add these secrets to your GitHub repository:
+          # 1. Go to GitHub repo → Settings → Secrets → Actions
+          # 2. Add TAILSCALE_AUTHKEY from https://login.tailscale.com/admin/settings/keys
+          oauth-client-id: ${{ secrets.TAILSCALE_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TAILSCALE_SECRET }}
+          tags: tag:ci
+      
+      - name: Test Tailscale connection
+        run: |
+          echo "📡 Tailscale status:"
+          tailscale status
+          
+          # Your Pi's Tailscale name (usually hostname.tailnet-name.ts.net)
+          # or use the Tailscale IP (100.x.x.x)
+          echo "🔍 Pinging Pi via Tailscale..."
+          tailscale ping raspberry-pi  # Replace with your Pi's Tailscale name
+      
+      - name: Deploy to Pi via Tailscale
+        env:
+          PI_TAILSCALE_IP: ${{ secrets.PI_TAILSCALE_IP }}  # e.g., 100.64.0.1
+        run: |
+          echo "🚀 Deploying via Tailscale to $PI_TAILSCALE_IP"
+          
+          # Setup SSH key
+          mkdir -p ~/.ssh
+          echo "${{ secrets.PI_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          
+          # SSH via Tailscale IP (no port forwarding needed!)
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa gaius@$PI_TAILSCALE_IP << 'EOF'
+            echo "Connected to Pi via Tailscale!"
+            cd /home/gaius/sermon-uploader
+            
+            # Pull latest code
+            git pull origin master
+            
+            # Run deployment
+            if [ -f deploy-from-pi.sh ]; then
+              ./deploy-from-pi.sh
+            else
+              cd backend
+              go build -o sermon-backend main.go
+              pkill sermon-backend || true
+              nohup ./sermon-backend > ~/backend.log 2>&1 &
+            fi
+            
+            # Health check
+            sleep 5
+            curl -s http://localhost:8000/api/health && echo "✅ Deployment successful!"
+          EOF
+      
+      - name: Summary
+        run: |
+          echo "## 🎉 Deployed via Tailscale!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Tailscale provides secure, zero-config VPN access to your Pi" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Benefits:" >> $GITHUB_STEP_SUMMARY
+          echo "- No port forwarding needed" >> $GITHUB_STEP_SUMMARY
+          echo "- Encrypted connection" >> $GITHUB_STEP_SUMMARY
+          echo "- Works behind any NAT/firewall" >> $GITHUB_STEP_SUMMARY
+          echo "- Industry-standard solution" >> $GITHUB_STEP_SUMMARY
