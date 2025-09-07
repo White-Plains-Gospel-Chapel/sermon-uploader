@@ -1,0 +1,155 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+# Cancel duplicate runs
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: '1.23'
+  NODE_VERSION: '20'
+
+jobs:
+  # Stage 1: Test (only if code changed)
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    outputs:
+      should-deploy: ${{ steps.check.outputs.should-deploy }}
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Check what changed
+        id: check
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "should-deploy=false" >> $GITHUB_OUTPUT
+          else
+            echo "should-deploy=true" >> $GITHUB_OUTPUT
+          fi
+      
+      # Backend tests
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: backend/go.sum
+      
+      - name: Test Backend
+        working-directory: backend
+        run: |
+          go mod verify
+          go test -v ./...
+          go vet ./...
+      
+      # Frontend tests
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      
+      - name: Test Frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run type-check || npx tsc --noEmit
+          npm run build
+
+  # Stage 2: Build Docker image (only on master)
+  build:
+    name: Build
+    needs: test
+    if: github.ref == 'refs/heads/master' && needs.test.outputs.should-deploy == 'true'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: sermon-uploader:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          outputs: type=docker,dest=/tmp/image.tar
+      
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: /tmp/image.tar
+          retention-days: 1
+
+  # Stage 3: Deploy to Pi (only after successful build)
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: self-hosted
+    environment: production
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download image
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: /tmp
+      
+      - name: Load and deploy image
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          # Load the image
+          docker load < /tmp/image.tar
+          
+          # Tag it properly
+          docker tag sermon-uploader:${{ github.sha }} sermon-uploader:latest
+          
+          # Create .env file
+          cat > .env << EOL
+          MINIO_ENDPOINT=192.168.1.127:9000
+          MINIO_ACCESS_KEY=gaius
+          MINIO_SECRET_KEY=John 3:16
+          MINIO_SECURE=false
+          MINIO_BUCKET=sermons
+          DISCORD_WEBHOOK_URL=$DISCORD_WEBHOOK_URL
+          LARGE_FILE_THRESHOLD_MB=100
+          PORT=8000
+          EOL
+          
+          # Stop old container
+          docker stop sermon-uploader 2>/dev/null || true
+          docker rm sermon-uploader 2>/dev/null || true
+          
+          # Run new container
+          docker run -d \
+            --name sermon-uploader \
+            --env-file .env \
+            -p 8000:8000 \
+            --restart unless-stopped \
+            sermon-uploader:latest
+          
+          # Health check
+          sleep 10
+          curl -f http://localhost:8000/api/health || exit 1
+          
+          echo "✅ Deployment successful!"
+          
+          # Cleanup old images
+          docker image prune -af --filter="until=24h"

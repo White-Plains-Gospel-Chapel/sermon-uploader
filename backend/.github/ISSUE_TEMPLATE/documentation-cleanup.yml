@@ -1,0 +1,214 @@
+name: Documentation Cleanup and Consolidation
+description: Consolidate and organize testing-related documentation into coherent, maintainable guides
+title: "[DOCS] Consolidate and cleanup testing documentation"
+labels: ["documentation", "cleanup", "low-risk"]
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Objective
+        Clean up and consolidate the multiple overlapping documentation files created during testing implementation into a coherent, maintainable documentation structure.
+        
+        **Estimated Effort**: 2-3 days
+        **Risk Level**: Very Low (documentation only)
+        **Dependencies**: None (can run in parallel with other work)
+        
+  - type: textarea
+    id: current-issues
+    attributes:
+      label: Current Documentation Issues
+      value: |
+        **Problems Identified**:
+        - [ ] Multiple overlapping TDD guides (TDD-COMPREHENSIVE-GUIDE.md, TDD-DEVELOPER-ONBOARDING.md, TDD-QUICK-REFERENCE.md)
+        - [ ] Redundant information across different files
+        - [ ] Inconsistent formatting and structure
+        - [ ] Some documentation is overly verbose for practical use
+        - [ ] Missing integration between different documentation pieces
+        - [ ] Unclear navigation and discovery of relevant docs
+        
+        **Impact**:
+        - New developers confused about which docs to read
+        - Information scattered across multiple files
+        - Maintenance burden of keeping multiple docs in sync
+        - Reduced adoption due to documentation overload
+        
+  - type: textarea
+    id: consolidation-strategy
+    attributes:
+      label: Documentation Consolidation Strategy
+      value: |
+        **Target Structure** (after consolidation):
+        
+        ```
+        docs/
+        ├── DEVELOPMENT.md          # Single comprehensive development guide
+        ├── TESTING.md              # Consolidated testing practices guide  
+        ├── API.md                  # API documentation (if applicable)
+        └── DEPLOYMENT.md           # Deployment and operations guide
+        
+        ROOT/
+        ├── README.md               # Updated with clear navigation
+        ├── CONTRIBUTING.md         # Developer contribution guidelines
+        └── CHANGELOG.md            # Release notes and changes
+        ```
+        
+        **Consolidation Rules**:
+        - Keep the most practical and actionable content
+        - Remove redundant sections across files
+        - Create clear cross-references between related topics
+        - Maintain a single source of truth for each topic
+        - Focus on common use cases rather than exhaustive coverage
+        
+  - type: textarea
+    id: content-organization
+    attributes:
+      label: Content Organization Plan
+      value: |
+        **DEVELOPMENT.md** (Primary developer guide):
+        - Quick start for new developers
+        - Development environment setup
+        - Common development workflows
+        - Debugging and troubleshooting
+        - Link to other relevant docs
+        
+        **TESTING.md** (Consolidated testing guide):
+        - Testing philosophy and approach
+        - How to write unit tests
+        - How to run integration tests
+        - Coverage expectations and measurement
+        - Testing best practices and patterns
+        
+        **CONTRIBUTING.md** (Developer contribution process):
+        - Git workflow and branch strategy
+        - Pull request process
+        - Code review guidelines
+        - Release process
+        
+        **README.md** (Enhanced project overview):
+        - Clear project description
+        - Quick start instructions
+        - Navigation to detailed documentation
+        - Architecture overview
+        - Contribution guidelines summary
+        
+  - type: textarea
+    id: files-to-remove
+    attributes:
+      label: Files to Remove or Consolidate
+      value: |
+        **Files to Delete** (redundant or obsolete):
+        - [ ] TDD-COMPREHENSIVE-GUIDE.md (merge into TESTING.md)
+        - [ ] TDD-DEVELOPER-ONBOARDING.md (merge into DEVELOPMENT.md)
+        - [ ] TDD-QUICK-REFERENCE.md (merge best parts into TESTING.md)
+        - [ ] MAKEFILE.md (information should go into DEVELOPMENT.md)
+        - [ ] Multiple workflow README files (consolidate)
+        
+        **Files to Consolidate**:
+        - [ ] Various setup and configuration guides
+        - [ ] Overlapping API documentation
+        - [ ] Scattered troubleshooting information
+        
+        **Files to Keep and Improve**:
+        - [ ] CLAUDE.md (project-specific AI instructions)
+        - [ ] Core project README
+        - [ ] License and legal files
+        
+  - type: dropdown
+    id: documentation-style
+    attributes:
+      label: Documentation Style Approach
+      options:
+        - "Minimal (essential information only)"
+        - "Balanced (practical with examples)"
+        - "Comprehensive (detailed coverage)"
+      default: 1
+    validations:
+      required: true
+      
+  - type: textarea
+    id: quality-standards
+    attributes:
+      label: Documentation Quality Standards
+      value: |
+        **Writing Standards**:
+        - Clear, concise language appropriate for developers
+        - Consistent formatting and structure across files
+        - Working code examples and commands
+        - Up-to-date information (remove obsolete references)
+        
+        **Content Standards**:
+        - Each document has a clear purpose and audience
+        - Information is organized logically (most important first)
+        - Cross-references are accurate and helpful
+        - Examples are practical and immediately usable
+        
+        **Maintenance Standards**:
+        - Single source of truth for each piece of information
+        - Clear ownership and update responsibilities
+        - Version-controlled with meaningful commit messages
+        - Regular review and update process defined
+        
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance Criteria
+      value: |
+        **Content Quality**:
+        - [ ] All documentation is accurate and up-to-date
+        - [ ] No redundant or conflicting information across files
+        - [ ] Clear navigation and cross-referencing
+        - [ ] All code examples and commands work correctly
+        
+        **Developer Experience**:
+        - [ ] New developer can find relevant information quickly
+        - [ ] Common questions answered in appropriate documents
+        - [ ] Clear next steps provided for each topic
+        - [ ] Troubleshooting information is accessible and helpful
+        
+        **Maintenance**:
+        - [ ] Documentation structure is sustainable long-term
+        - [ ] Update process is clear and manageable
+        - [ ] Information is organized to minimize maintenance burden
+        - [ ] Team agrees on new documentation standards
+        
+  - type: textarea
+    id: implementation-approach
+    attributes:
+      label: Implementation Approach
+      value: |
+        **Phase 1: Inventory and Analysis**
+        - [ ] Catalog all existing documentation files
+        - [ ] Identify redundant and overlapping content
+        - [ ] Map content to target documentation structure
+        
+        **Phase 2: Content Consolidation**
+        - [ ] Create new consolidated documents
+        - [ ] Migrate best content from existing files
+        - [ ] Remove redundancy and improve clarity
+        - [ ] Update cross-references and links
+        
+        **Phase 3: Navigation and Discoverability**
+        - [ ] Update README with clear documentation navigation
+        - [ ] Add table of contents to longer documents
+        - [ ] Create quick reference sections for common tasks
+        
+        **Phase 4: Review and Refinement**
+        - [ ] Team review of consolidated documentation
+        - [ ] User testing with new developer onboarding
+        - [ ] Iterate based on feedback and usage patterns
+        
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: PR Checklist (for implementer)
+      options:
+        - label: All existing documentation reviewed and catalogued
+        - label: Content consolidated without losing important information
+        - label: All links and cross-references verified as working
+        - label: Documentation structure is clear and logical
+        - label: New developer can follow documentation successfully
+        - label: Team has reviewed and approved new structure
+        - label: Old files properly removed (not just hidden)
+        - label: README updated with clear navigation to relevant docs

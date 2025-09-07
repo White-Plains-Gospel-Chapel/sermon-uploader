@@ -1,0 +1,225 @@
+name: Development Tooling Infrastructure
+description: Implement comprehensive development tooling for improved developer productivity
+title: "[FEAT] Implement development tooling infrastructure"
+labels: ["enhancement", "developer-experience", "tooling", "medium-risk"]
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Objective
+        Create a comprehensive development tooling infrastructure that improves developer productivity, provides consistent development environment, and automates common development tasks.
+        
+        **Estimated Effort**: 3-4 days
+        **Risk Level**: Medium (affects development workflow)
+        **Dependencies**: feat/go-linting-setup (for integration)
+        
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope of Work
+      value: |
+        - [ ] Complete comprehensive Makefile with all development targets
+        - [ ] Setup hot reload development environment with Air
+        - [ ] Configure Git hooks for automated code quality checks
+        - [ ] Create development environment setup scripts
+        - [ ] Add debugging and profiling support
+        - [ ] Implement dependency management automation
+        - [ ] Create development documentation and workflows
+        - [ ] Add cross-platform compatibility (macOS, Linux, Docker)
+        
+  - type: dropdown
+    id: automation-level
+    attributes:
+      label: Automation Level
+      options:
+        - "Basic (manual developer setup)"
+        - "Semi-automated (scripts provided)"  
+        - "Fully automated (one-command setup)"
+      default: 1
+    validations:
+      required: true
+      
+  - type: textarea
+    id: makefile-targets
+    attributes:
+      label: Makefile Target Categories
+      value: |
+        **Development Workflow**:
+        - `make dev` - Start development server with hot reload
+        - `make run` - Build and run the application
+        - `make debug` - Run with debugging enabled
+        - `make profile` - Run with profiling enabled
+        
+        **Testing and Quality**:
+        - `make test` - Run all tests
+        - `make test-unit` - Unit tests only
+        - `make test-integration` - Integration tests with services
+        - `make test-coverage` - Generate coverage report
+        - `make lint` - Run all linting checks
+        - `make format` - Format code automatically
+        
+        **Build and Release**:
+        - `make build` - Build for current platform
+        - `make build-all` - Build for all supported platforms
+        - `make docker-build` - Build Docker image
+        - `make clean` - Clean build artifacts
+        
+        **Environment Management**:
+        - `make setup` - Setup development environment
+        - `make deps-update` - Update dependencies
+        - `make tools` - Check installed development tools
+        - `make env` - Show environment information
+        
+  - type: textarea
+    id: git-hooks-strategy
+    attributes:
+      label: Git Hooks Strategy
+      value: |
+        **Pre-commit Hooks** (fast, essential checks):
+        - Code formatting (gofmt, goimports)
+        - Basic linting (critical errors only)
+        - Syntax validation
+        - ~10-20 seconds execution time
+        
+        **Pre-push Hooks** (comprehensive validation):
+        - Full test suite execution
+        - Security scanning
+        - Build verification
+        - Coverage validation
+        - ~2-5 minutes execution time
+        
+        **Hook Management**:
+        - Easy installation with `make setup-hooks`
+        - Bypass procedures for emergency commits
+        - Clear error messages with fix instructions
+        - Cross-platform compatibility
+        
+  - type: textarea
+    id: developer-experience
+    attributes:
+      label: Developer Experience Features
+      value: |
+        **Hot Reload Development**:
+        - Automatic restart on code changes
+        - Fast startup time (< 5 seconds)
+        - Clear startup and error logging
+        - Browser refresh integration (if applicable)
+        
+        **Debugging Support**:
+        - Integrated pprof profiler endpoints
+        - Debug logging configuration
+        - Development vs production environment detection
+        - Race detection in development mode
+        
+        **Environment Setup**:
+        - One-command development environment setup
+        - Automatic tool installation and verification
+        - Environment validation and troubleshooting
+        - Documentation for manual setup fallbacks
+        
+  - type: textarea
+    id: cross-platform-support
+    attributes:
+      label: Cross-Platform Compatibility
+      value: |
+        **Target Platforms**:
+        - macOS (primary development)
+        - Linux (CI/CD and production)
+        - Docker (containerized development)
+        - Windows (optional, basic support)
+        
+        **Platform-Specific Considerations**:
+        - Path handling differences
+        - Shell compatibility (bash vs zsh vs fish)
+        - Tool installation methods
+        - Performance characteristics
+        
+        **Fallback Strategies**:
+        - Graceful degradation when tools unavailable
+        - Clear error messages for missing dependencies
+        - Manual alternative procedures documented
+        
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies & Integration Points
+      value: |
+        **Requires**:
+        - feat/go-linting-setup (integrates linting tools)
+        
+        **Integrates With**:
+        - feat/go-unit-tests (test execution targets)
+        - feat/go-integration-tests (comprehensive test targets)
+        - feat/ci-cd-pipeline (same commands used in CI)
+        
+        **External Tool Dependencies**:
+        - Air for hot reload (go install)
+        - Docker for containerized development
+        - Make (system package manager)
+        - Git (assumed available)
+        
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance Criteria
+      value: |
+        **Functionality**:
+        - [ ] `make dev` provides smooth development experience
+        - [ ] All Makefile targets work across macOS and Linux
+        - [ ] Git hooks install and function correctly
+        - [ ] Hot reload restarts application on code changes
+        - [ ] Debugging and profiling tools accessible
+        
+        **Developer Experience**:
+        - [ ] New developer can run `make setup` and start contributing
+        - [ ] Clear error messages when tools missing or misconfigured
+        - [ ] Documentation covers common development workflows
+        - [ ] Performance is reasonable (not excessively slow)
+        
+        **Integration**:
+        - [ ] Works with existing project structure
+        - [ ] Compatible with CI/CD pipeline commands
+        - [ ] Integrates with linting and testing infrastructure
+        - [ ] No conflicts with existing development practices
+        
+  - type: textarea
+    id: implementation-notes
+    attributes:
+      label: Implementation Notes
+      value: |
+        **Key Files to Create/Modify**:
+        - `Makefile` - Comprehensive development targets
+        - `.air.toml` - Hot reload configuration
+        - `.githooks/pre-commit` - Pre-commit validation script
+        - `.githooks/pre-push` - Pre-push validation script
+        - `scripts/setup-dev-env.sh` - Development environment setup
+        - `docs/DEVELOPMENT.md` - Developer onboarding guide
+        
+        **Best Practices**:
+        - Fail fast with clear error messages
+        - Provide both automated and manual alternatives
+        - Use consistent command patterns across targets
+        - Include help text for all major targets
+        - Version pin external tools when possible
+        
+        **Avoid Over-Engineering**:
+        - Don't create tools that duplicate existing functionality
+        - Keep Makefile readable and maintainable
+        - Avoid complex shell scripting in Makefiles
+        - Focus on common developer workflows
+        
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: PR Checklist (for implementer)
+      options:
+        - label: All Makefile targets tested on multiple platforms
+        - label: Hot reload development environment functional
+        - label: Git hooks install and work correctly
+        - label: Development setup tested on clean machine
+        - label: Performance is acceptable for daily development
+        - label: Documentation covers setup and troubleshooting
+        - label: Integration tested with existing workflows
+        - label: Team feedback incorporated on developer experience
