@@ -81,21 +81,22 @@ type MultipartUploadHandler struct {
 
 // NewMultipartUploadHandler creates a new multipart upload handler
 func NewMultipartUploadHandler(minioEndpoint, accessKey, secretKey, bucket string, secure bool) (*MultipartUploadHandler, error) {
-	// Create MinIO client with HTTPS support
-	var transport *http.Transport
+	// Create MinIO client options
+	opts := &minio.Options{
+		Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
+		Secure: secure,
+	}
+	
+	// Only set custom transport for HTTPS with self-signed certs
 	if secure {
-		transport = &http.Transport{
+		opts.Transport = &http.Transport{
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true, // For self-signed certs
 			},
 		}
 	}
 
-	minioClient, err := minio.New(minioEndpoint, &minio.Options{
-		Creds:     credentials.NewStaticV4(accessKey, secretKey, ""),
-		Secure:    secure,
-		Transport: transport,
-	})
+	minioClient, err := minio.New(minioEndpoint, opts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create MinIO client: %v", err)
 	}
