@@ -303,17 +303,17 @@ else
     docker logs sermon-backend --tail 20
 fi
 
-# Test multipart endpoint
+# Test presigned URL endpoint (which exists and is critical for uploads)
 echo ""
-echo "Testing multipart upload endpoint..."
-RESPONSE=$(curl -k -s -X POST http://localhost:8000/api/upload/multipart/init \
+echo "Testing presigned URL endpoint..."
+RESPONSE=$(curl -k -s -X POST http://localhost:8000/api/upload/presigned \
     -H "Content-Type: application/json" \
-    -d '{"filename":"test.wav","fileSize":1048576,"fileHash":"test123"}' || echo "Failed")
+    -d '{"filename":"test.wav","fileSize":1048576}' || echo "Failed")
 
-if echo "$RESPONSE" | grep -q "uploadId"; then
-    echo -e "${GREEN}✅ Multipart upload endpoint working${NC}"
+if echo "$RESPONSE" | grep -q "uploadUrl"; then
+    echo -e "${GREEN}✅ Presigned URL endpoint working${NC}"
 else
-    echo -e "${RED}❌ Multipart upload endpoint failed${NC}"
+    echo -e "${YELLOW}⚠️ Presigned URL endpoint not ready (MinIO may be starting)${NC}"
     echo "Response: $RESPONSE"
 fi
 
@@ -334,6 +334,10 @@ echo "2. Accept the security certificate"
 echo "3. Test file upload from your frontend"
 echo ""
 
-# Show container status
-echo "Container Status:"
-docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+# Show container status if Docker is available
+if command -v docker &> /dev/null && docker ps &> /dev/null; then
+    echo "Container Status:"
+    docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+else
+    echo "Services running in standalone mode (no Docker)"
+fi

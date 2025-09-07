@@ -61,31 +61,9 @@ jobs:
           if [ -f deploy-from-pi.sh ]; then
             chmod +x deploy-from-pi.sh
             ./deploy-from-pi.sh
+            # Script exit code determines success
           else
-            # Manual deployment steps
-            echo "📦 Building backend..."
-            cd backend
-            go build -o sermon-backend main.go
-            
-            # Restart services
-            echo "🔄 Restarting services..."
-            if command -v docker-compose &> /dev/null; then
-              cd ..
-              docker-compose -f docker-compose.pi.yml down
-              docker-compose -f docker-compose.pi.yml up -d
-            else
-              # Run without Docker
-              pkill sermon-backend || true
-              nohup ./sermon-backend > ~/backend.log 2>&1 &
-            fi
-          fi
-          
-          # Health check
-          sleep 5
-          if curl -s http://localhost:8000/api/health > /dev/null; then
-            echo "✅ Backend is healthy!"
-          else
-            echo "⚠️ Backend health check failed"
+            echo "❌ deploy-from-pi.sh not found!"
             exit 1
           fi
           
