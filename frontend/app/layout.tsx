@@ -4,12 +4,17 @@ import './globals.css'
 
 const inter = Inter({ subsets: ['latin'] })
 
+export const viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 1,
+}
+
 export const metadata: Metadata = {
   title: 'Sermon Uploader',
   description: 'Upload and manage sermon audio files with automatic processing',
   keywords: ['sermon', 'upload', 'audio', 'church', 'management'],
   authors: [{ name: 'Sermon Uploader Team' }],
-  viewport: 'width=device-width, initial-scale=1',
 }
 
 export default function RootLayout({

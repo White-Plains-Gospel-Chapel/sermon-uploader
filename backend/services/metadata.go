@@ -1,8 +1,10 @@
 package services
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -348,4 +350,28 @@ func (m *MetadataService) formatDuration(seconds float64) string {
 		return fmt.Sprintf("%d:%02d:%02d", hours, minutes, secs)
 	}
 	return fmt.Sprintf("%d:%02d", minutes, secs)
+}
+
+// CalculateStreamingHash calculates SHA256 hash of a stream without loading entire content into memory
+func (m *MetadataService) CalculateStreamingHash(reader io.Reader) (string, error) {
+	hasher := sha256.New()
+	
+	// Use 32KB buffer for streaming hash calculation
+	buffer := make([]byte, 32768)
+	
+	for {
+		n, err := reader.Read(buffer)
+		if n > 0 {
+			hasher.Write(buffer[:n])
+		}
+		
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", fmt.Errorf("failed to read stream for hashing: %w", err)
+		}
+	}
+	
+	return fmt.Sprintf("%x", hasher.Sum(nil)), nil
 }

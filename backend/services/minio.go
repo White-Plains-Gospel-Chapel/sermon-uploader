@@ -468,6 +468,7 @@ func (s *MinIOService) CreateTempConnection(endpoint, accessKey, secretKey strin
 }
 
 // DownloadFileData downloads a file from MinIO and returns the data as bytes
+// WARNING: This method loads entire file into memory - use DownloadFileStreaming for large files
 func (s *MinIOService) DownloadFileData(filename string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -484,6 +485,19 @@ func (s *MinIOService) DownloadFileData(filename string) ([]byte, error) {
 	}
 
 	return data, nil
+}
+
+// DownloadFileStreaming returns a streaming reader for the file without loading into memory
+func (s *MinIOService) DownloadFileStreaming(filename string) (io.ReadCloser, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	object, err := s.client.GetObject(ctx, s.config.MinioBucket, filename, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get object: %v", err)
+	}
+
+	return object, nil
 }
 
 // UploadFileStreaming uploads file using streaming with zero compression and optimizations

@@ -4,15 +4,32 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 	
 	"sermon-uploader/config"
 )
 
+type DeploymentMessage struct {
+	MessageID        string    `json:"message_id"`
+	StartTime        time.Time `json:"start_time"`
+	LastUpdate       time.Time `json:"last_update"`
+	Status           string    `json:"status"`
+	BackendVersion   string    `json:"backend_version"`
+	FrontendVersion  string    `json:"frontend_version"`
+	HealthCheckPassed bool     `json:"health_check_passed"`
+}
+
 type DiscordService struct {
-	webhookURL string
+	webhookURL     string
+	webhookID      string
+	webhookToken   string
+	client         *http.Client
+	mu             sync.RWMutex
+	deploymentMsg  *DeploymentMessage
 }
 
 type DiscordEmbed struct {
@@ -35,9 +52,32 @@ type DiscordMessage struct {
 }
 
 func NewDiscordService(webhookURL string) *DiscordService {
-	return &DiscordService{
-		webhookURL: webhookURL,
+	if webhookURL == "" {
+		return &DiscordService{}
 	}
+	
+	// Parse webhook URL to extract ID and token for message editing
+	parts := strings.Split(strings.TrimSuffix(webhookURL, "/"), "/")
+	webhookID := ""
+	webhookToken := ""
+	if len(parts) >= 2 {
+		webhookToken = parts[len(parts)-1]
+		webhookID = parts[len(parts)-2]
+	}
+	
+	service := &DiscordService{
+		webhookURL:   webhookURL,
+		webhookID:    webhookID,
+		webhookToken: webhookToken,
+		client: &http.Client{
+			Timeout: 10 * time.Second,
+		},
+	}
+	
+	// Load existing deployment message if available
+	service.loadDeploymentMessage()
+	
+	return service
 }
 
 func (d *DiscordService) SendNotification(title, description string, color int, fields []DiscordField) error {
@@ -268,51 +308,318 @@ func (d *DiscordService) SendError(message string) error {
 	)
 }
 
-// SendDeploymentNotification sends a notification after successful deployment
+// getESTTime returns current time in EST
+func (d *DiscordService) getESTTime() time.Time {
+	loc, _ := time.LoadLocation("America/New_York")
+	return time.Now().In(loc)
+}
+
+// formatESTTime formats time for display
+func (d *DiscordService) formatESTTime(t time.Time) string {
+	loc, _ := time.LoadLocation("America/New_York")
+	return t.In(loc).Format("3:04 PM EST")
+}
+
+// loadDeploymentMessage loads the deployment message from file if it exists
+func (d *DiscordService) loadDeploymentMessage() {
+	data, err := ioutil.ReadFile("/tmp/discord_deployment_message.json")
+	if err != nil {
+		return
+	}
+	
+	var msg DeploymentMessage
+	if err := json.Unmarshal(data, &msg); err != nil {
+		return
+	}
+	
+	d.mu.Lock()
+	d.deploymentMsg = &msg
+	d.mu.Unlock()
+}
+
+// saveDeploymentMessage saves the deployment message to file
+func (d *DiscordService) saveDeploymentMessage() {
+	if d.deploymentMsg == nil {
+		return
+	}
+	
+	data, err := json.Marshal(d.deploymentMsg)
+	if err != nil {
+		return
+	}
+	
+	ioutil.WriteFile("/tmp/discord_deployment_message.json", data, 0644)
+}
+
+// createMessage creates a new Discord message and returns its ID
+func (d *DiscordService) createMessage(content string, embed interface{}) (string, error) {
+	if d.webhookURL == "" {
+		return "", nil
+	}
+
+	payload := map[string]interface{}{}
+	if content != "" {
+		payload["content"] = content
+	}
+	if embed != nil {
+		payload["embeds"] = []interface{}{embed}
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+
+	// Send with ?wait=true to get message details back
+	resp, err := d.client.Post(d.webhookURL+"?wait=true", "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("discord webhook returned status %d", resp.StatusCode)
+	}
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+
+	if id, ok := result["id"].(string); ok {
+		return id, nil
+	}
+
+	return "", fmt.Errorf("no message ID in response")
+}
+
+// updateMessage updates an existing Discord message
+func (d *DiscordService) updateMessage(messageID string, content string, embed interface{}) error {
+	if d.webhookURL == "" || messageID == "" {
+		return nil
+	}
+
+	payload := map[string]interface{}{}
+	if content != "" {
+		payload["content"] = content
+	}
+	if embed != nil {
+		payload["embeds"] = []interface{}{embed}
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	editURL := fmt.Sprintf("https://discord.com/api/webhooks/%s/%s/messages/%s",
+		d.webhookID, d.webhookToken, messageID)
+
+	req, err := http.NewRequest("PATCH", editURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := d.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to update message: status %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+// calculateUptime calculates uptime since deployment start
+func (d *DiscordService) calculateUptime() string {
+	d.mu.RLock()
+	msg := d.deploymentMsg
+	d.mu.RUnlock()
+
+	if msg == nil {
+		return "Unknown"
+	}
+
+	duration := time.Since(msg.StartTime)
+	hours := int(duration.Hours())
+	minutes := int(duration.Minutes()) % 60
+
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm", hours, minutes)
+	}
+	return fmt.Sprintf("%dm", minutes)
+}
+
+// StartDeploymentNotification creates a live-updating deployment message
+func (d *DiscordService) StartDeploymentNotification() error {
+	estTime := d.getESTTime()
+
+	embed := map[string]interface{}{
+		"title":       "🎯 Sermon Uploader Status - Live",
+		"description": "━━━━━━━━━━━━━━━━━━━━━━━━━",
+		"color":       0xffaa00, // Orange for in-progress
+		"fields": []map[string]interface{}{
+			{
+				"name":   "🚀 Started",
+				"value":  d.formatESTTime(estTime),
+				"inline": true,
+			},
+			{
+				"name":   "🔄 Status",
+				"value":  "⏳ Initializing...",
+				"inline": true,
+			},
+			{
+				"name":   "Current Status",
+				"value":  "🔄 STARTING",
+				"inline": false,
+			},
+		},
+		"footer": map[string]string{
+			"text": fmt.Sprintf("🔄 Last Check: %s", d.formatESTTime(estTime)),
+		},
+		"timestamp": estTime.Format(time.RFC3339),
+	}
+
+	messageID, err := d.createMessage("", embed)
+	if err != nil {
+		return err
+	}
+
+	// Store the message for future updates
+	d.mu.Lock()
+	d.deploymentMsg = &DeploymentMessage{
+		MessageID:   messageID,
+		StartTime:   estTime,
+		LastUpdate:  estTime,
+		Status:      "starting",
+	}
+	d.mu.Unlock()
+
+	d.saveDeploymentMessage()
+	return nil
+}
+
+// UpdateDeploymentStatus updates the live deployment message
+func (d *DiscordService) UpdateDeploymentStatus(status string, backendVersion, frontendVersion string, healthPassed bool) error {
+	d.mu.Lock()
+	if d.deploymentMsg == nil {
+		d.mu.Unlock()
+		// No existing message, create one
+		if err := d.StartDeploymentNotification(); err != nil {
+			return err
+		}
+		d.mu.Lock()
+	}
+	
+	estTime := d.getESTTime()
+	d.deploymentMsg.LastUpdate = estTime
+	d.deploymentMsg.Status = status
+	d.deploymentMsg.BackendVersion = backendVersion
+	d.deploymentMsg.FrontendVersion = frontendVersion
+	d.deploymentMsg.HealthCheckPassed = healthPassed
+	
+	messageID := d.deploymentMsg.MessageID
+	startTime := d.deploymentMsg.StartTime
+	d.mu.Unlock()
+
+	// Determine colors and status emoji
+	color := 0xffaa00 // Orange for in-progress
+	statusEmoji := "🔄"
+	currentStatus := "STARTING"
+	
+	switch status {
+	case "deployed":
+		if healthPassed {
+			color = 0x00ff00 // Green for success
+			statusEmoji = "✅"
+			currentStatus = "HEALTHY"
+		} else {
+			color = 0xffa500 // Orange for partial
+			statusEmoji = "⚠️"
+			currentStatus = "DEPLOYED"
+		}
+	case "failed":
+		color = 0xff0000 // Red for failure
+		statusEmoji = "❌"
+		currentStatus = "FAILED"
+	case "verified":
+		color = 0x00ff00 // Green for full success
+		statusEmoji = "✅"
+		currentStatus = "HEALTHY"
+	}
+
+	fields := []map[string]interface{}{
+		{
+			"name":   "🚀 Started",
+			"value":  d.formatESTTime(startTime),
+			"inline": true,
+		},
+		{
+			"name":   "Uptime",
+			"value":  d.calculateUptime(),
+			"inline": true,
+		},
+	}
+
+	// Add deployment info if available
+	if status == "deployed" || status == "verified" {
+		fields = append(fields, map[string]interface{}{
+			"name":   "🔄 Deployed",
+			"value":  d.formatESTTime(estTime),
+			"inline": true,
+		})
+		
+		if status == "verified" {
+			fields = append(fields, map[string]interface{}{
+				"name":   "✅ Verified",
+				"value":  d.formatESTTime(estTime),
+				"inline": true,
+			})
+		}
+	}
+
+	// Add version info
+	if backendVersion != "" {
+		fields = append(fields, map[string]interface{}{
+			"name":   "Version",
+			"value":  backendVersion,
+			"inline": true,
+		})
+	}
+
+	// Add current status
+	fields = append(fields, map[string]interface{}{
+		"name":   "Current Status",
+		"value":  fmt.Sprintf("%s %s", statusEmoji, currentStatus),
+		"inline": false,
+	})
+
+	embed := map[string]interface{}{
+		"title":       "🎯 Sermon Uploader Status - Live",
+		"description": "━━━━━━━━━━━━━━━━━━━━━━━━━",
+		"color":       color,
+		"fields":      fields,
+		"footer": map[string]string{
+			"text": fmt.Sprintf("🔄 Last Check: %s", d.formatESTTime(estTime)),
+		},
+		"timestamp": estTime.Format(time.RFC3339),
+	}
+
+	d.saveDeploymentMessage()
+	return d.updateMessage(messageID, "", embed)
+}
+
+// SendDeploymentNotification sends a notification after successful deployment (backward compatibility)
 func (d *DiscordService) SendDeploymentNotification(success bool, frontendVersion, backendVersion string) error {
-	var title, description string
-	var color int
-	
+	// Use the new live update system
 	if success {
-		title = "✅ Deployment Successful"
-		description = "New version deployed and verified"
-		color = 0x00ff00 // Green
+		return d.UpdateDeploymentStatus("verified", backendVersion, frontendVersion, true)
 	} else {
-		title = "❌ Deployment Failed"
-		description = "Deployment verification failed"
-		color = 0xff0000 // Red
+		return d.UpdateDeploymentStatus("failed", backendVersion, frontendVersion, false)
 	}
-	
-	fields := []DiscordField{
-		{
-			Name:   "Backend Version",
-			Value:  backendVersion,
-			Inline: true,
-		},
-		{
-			Name:   "Frontend Version",
-			Value:  frontendVersion,
-			Inline: true,
-		},
-		{
-			Name:   "Deployed At",
-			Value:  time.Now().Format("2006-01-02 15:04:05 MST"),
-			Inline: false,
-		},
-	}
-	
-	if success {
-		fields = append(fields, DiscordField{
-			Name:   "Health Check",
-			Value:  "✅ Passed",
-			Inline: true,
-		})
-		fields = append(fields, DiscordField{
-			Name:   "Version Match",
-			Value:  "✅ Verified",
-			Inline: true,
-		})
-	}
-	
-	return d.SendNotification(title, description, color, fields)
 }

@@ -21,6 +21,9 @@ type Config struct {
 	// Discord Configuration
 	DiscordWebhookURL string
 
+	// GitHub Webhook Configuration
+	GitHubWebhookSecret string
+
 	// File Processing
 	WAVSuffix      string
 	AACSuffix      string
@@ -36,12 +39,14 @@ type Config struct {
 	MaxUploadSize        int64
 
 	// Pi-Specific Performance Configuration
-	PiOptimization     bool    // Enable Pi-specific optimizations
-	MaxMemoryLimitMB   int64   // Memory limit in MB
-	ThermalThrottling  bool    // Enable thermal throttling
-	ThermalThresholdC  float64 // Temperature threshold in Celsius
-	GCTargetPercentage int     // GOGC value for garbage collection
-	MaxGoroutines      int     // Maximum goroutines
+	PiOptimization        bool    // Enable Pi-specific optimizations
+	MaxMemoryLimitMB      int64   // Memory limit in MB
+	MaxMemoryMB           float64 // Maximum memory for memory monitor (MB)
+	MemoryPressureThreshold float64 // Memory pressure threshold (0.0-1.0)
+	ThermalThrottling     bool    // Enable thermal throttling
+	ThermalThresholdC     float64 // Temperature threshold in Celsius
+	GCTargetPercentage    int     // GOGC value for garbage collection
+	MaxGoroutines         int     // Maximum goroutines
 
 	// Buffer and Pool Configuration
 	BufferPoolEnabled bool // Enable buffer pooling
@@ -79,6 +84,8 @@ func New() *Config {
 	// Pi-specific configuration
 	piOptimization, _ := strconv.ParseBool(getEnv("PI_OPTIMIZATION", "true"))
 	maxMemoryMB, _ := strconv.ParseInt(getEnv("MAX_MEMORY_MB", "800"), 10, 64) // 800MB for Pi
+	maxMemoryMonitorMB, _ := strconv.ParseFloat(getEnv("MAX_MEMORY_MONITOR_MB", "1800"), 64) // 1.8GB for monitoring
+	memoryPressureThreshold, _ := strconv.ParseFloat(getEnv("MEMORY_PRESSURE_THRESHOLD", "0.8"), 64) // 80%
 	thermalThrottling, _ := strconv.ParseBool(getEnv("THERMAL_THROTTLING", "true"))
 	thermalThreshold, _ := strconv.ParseFloat(getEnv("THERMAL_THRESHOLD_C", "75.0"), 64)
 	gcTargetPercentage, _ := strconv.Atoi(getEnv("GOGC", "100"))
@@ -122,6 +129,7 @@ func New() *Config {
 		PublicMinIOEndpoint:  getEnv("MINIO_PUBLIC_ENDPOINT", ""),
 		PublicMinIOSecure:    publicSecure,
 		DiscordWebhookURL:    getEnv("DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/1410698516891701400/Ve6k3d8sdd54kf0II1xFc7H6YkYLoWiPFDEe5NsHsmX4Qv6l4CNzD4rMmdlWPQxLnRPT"),
+		GitHubWebhookSecret:  getEnv("GITHUB_WEBHOOK_SECRET", "test-github-secret"),
 		WAVSuffix:            getEnv("WAV_SUFFIX", "_raw"),
 		AACSuffix:            getEnv("AAC_SUFFIX", "_streamable"),
 		BatchThreshold:       batchThreshold,
@@ -132,12 +140,14 @@ func New() *Config {
 		MaxUploadSize:        maxUploadSize,
 
 		// Pi-specific configuration
-		PiOptimization:     piOptimization,
-		MaxMemoryLimitMB:   maxMemoryMB,
-		ThermalThrottling:  thermalThrottling,
-		ThermalThresholdC:  thermalThreshold,
-		GCTargetPercentage: gcTargetPercentage,
-		MaxGoroutines:      maxGoroutines,
+		PiOptimization:        piOptimization,
+		MaxMemoryLimitMB:      maxMemoryMB,
+		MaxMemoryMB:           maxMemoryMonitorMB,
+		MemoryPressureThreshold: memoryPressureThreshold,
+		ThermalThrottling:     thermalThrottling,
+		ThermalThresholdC:     thermalThreshold,
+		GCTargetPercentage:    gcTargetPercentage,
+		MaxGoroutines:         maxGoroutines,
 
 		// Buffer configuration
 		BufferPoolEnabled: bufferPoolEnabled,

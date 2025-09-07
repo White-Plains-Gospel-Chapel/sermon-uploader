@@ -1,12 +1,13 @@
 package handlers
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
-	"io"
 	"log"
 	"log/slog"
 	"mime/multipart"
+	"runtime"
 	"strings"
 	"time"
 
@@ -17,13 +18,16 @@ import (
 )
 
 type Handlers struct {
-	fileService    *services.FileService
-	minioService   *services.MinIOService
-	discordService *services.DiscordService
-	wsHub          *services.WebSocketHub
-	config         *config.Config
-	logger         *slog.Logger
-	startTime      time.Time
+	fileService         *services.FileService
+	minioService        *services.MinIOService
+	discordService      *services.DiscordService
+	discordLiveService  *services.DiscordLiveService
+	wsHub               *services.WebSocketHub
+	memoryMonitor       *services.MemoryMonitorService
+	config              *config.Config
+	logger              *slog.Logger
+	productionLogger    *services.ProductionLogger
+	startTime           time.Time
 }
 
 type StatusResponse struct {
@@ -34,15 +38,44 @@ type StatusResponse struct {
 	BucketName     string `json:"bucket_name"`
 }
 
-func New(fileService *services.FileService, minioService *services.MinIOService, discordService *services.DiscordService, wsHub *services.WebSocketHub, cfg *config.Config) *Handlers {
+func New(fileService *services.FileService, minioService *services.MinIOService, discordService *services.DiscordService, discordLiveService *services.DiscordLiveService, wsHub *services.WebSocketHub, cfg *config.Config, productionLogger *services.ProductionLogger) *Handlers {
+	// Initialize memory monitoring for Pi optimization
+	memoryMonitor := services.NewMemoryMonitorService(cfg)
+	
+	// Set memory pressure callbacks
+	memoryMonitor.SetMemoryPressureCallback(func(stats services.MemoryStats) {
+		slog.Warn("Memory pressure detected during upload",
+			"alloc_mb", stats.AllocMB,
+			"pressure_level", stats.PressureLevel,
+			"gc_cycles", stats.GCCycles)
+	})
+	
+	memoryMonitor.SetMemoryAlertCallback(func(stats services.MemoryStats) {
+		slog.Error("Critical memory pressure - forcing GC",
+			"alloc_mb", stats.AllocMB,
+			"sys_mb", stats.SysMB,
+			"pressure_level", stats.PressureLevel)
+		// Force immediate GC on critical pressure
+		runtime.GC()
+		time.Sleep(10 * time.Millisecond)
+		runtime.GC()
+	})
+	
+	// Start monitoring with 1-second intervals
+	ctx := context.Background()
+	go memoryMonitor.StartMonitoring(ctx, 1000)
+
 	return &Handlers{
-		fileService:    fileService,
-		minioService:   minioService,
-		discordService: discordService,
-		wsHub:          wsHub,
-		config:         cfg,
-		logger:         slog.Default(),
-		startTime:      time.Now(),
+		fileService:         fileService,
+		minioService:        minioService,
+		discordService:      discordService,
+		discordLiveService:  discordLiveService,
+		wsHub:               wsHub,
+		memoryMonitor:       memoryMonitor,
+		config:              cfg,
+		logger:              slog.Default(),
+		productionLogger:    productionLogger,
+		startTime:           time.Now(),
 	}
 }
 
@@ -53,7 +86,54 @@ func (h *Handlers) HealthCheck(c *fiber.Ctx) error {
 		"service":     "sermon-uploader-go",
 		"version":     config.Version,
 		"fullVersion": config.GetFullVersion("backend"),
+		"memory":      h.memoryMonitor.GetMemoryStatsForAPI(),
 	})
+}
+
+// GetMemoryStatus returns detailed memory statistics
+func (h *Handlers) GetMemoryStatus(c *fiber.Ctx) error {
+	stats := h.memoryMonitor.GetCurrentStats()
+	
+	return c.JSON(fiber.Map{
+		"success": true,
+		"memory": map[string]interface{}{
+			"current_stats":    h.memoryMonitor.GetMemoryStatsForAPI(),
+			"raw_stats":        stats,
+			"monitoring":       true,
+			"recommendations": h.getMemoryRecommendations(stats),
+		},
+	})
+}
+
+// getMemoryRecommendations provides memory optimization suggestions
+func (h *Handlers) getMemoryRecommendations(stats services.MemoryStats) []string {
+	var recommendations []string
+	
+	usageRatio := stats.AllocMB / 1800.0 // Assuming 1.8GB limit for Pi
+	
+	if usageRatio > 0.9 {
+		recommendations = append(recommendations, "Critical: Memory usage >90% - consider restarting service")
+	} else if usageRatio > 0.8 {
+		recommendations = append(recommendations, "Warning: Memory usage >80% - avoid large uploads")
+	} else if usageRatio > 0.7 {
+		recommendations = append(recommendations, "Caution: Memory usage >70% - monitor closely")
+	}
+	
+	if stats.PressureLevel != "normal" {
+		recommendations = append(recommendations, "Memory pressure detected - uploads may be throttled")
+	}
+	
+	// GC recommendations
+	timeSinceGC := time.Since(stats.LastGC)
+	if timeSinceGC > 5*time.Minute && usageRatio > 0.6 {
+		recommendations = append(recommendations, "Consider manual garbage collection")
+	}
+	
+	if len(recommendations) == 0 {
+		recommendations = append(recommendations, "Memory usage is healthy")
+	}
+	
+	return recommendations
 }
 
 func (h *Handlers) GetStatus(c *fiber.Ctx) error {
@@ -107,6 +187,56 @@ func (h *Handlers) TestDiscord(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"success": true,
 		"message": "Discord webhook test successful! Check your Discord channel for the test message.",
+	})
+}
+
+type DeploymentStatusRequest struct {
+	Status          string `json:"status"`
+	BackendVersion  string `json:"backend_version"`
+	FrontendVersion string `json:"frontend_version"`
+	HealthPassed    bool   `json:"health_passed"`
+}
+
+func (h *Handlers) UpdateDeploymentStatus(c *fiber.Ctx) error {
+	var req DeploymentStatusRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{
+			"success": false,
+			"message": "Invalid request body",
+			"error":   err.Error(),
+		})
+	}
+
+	// Validate required fields
+	if req.Status == "" {
+		return c.Status(400).JSON(fiber.Map{
+			"success": false,
+			"message": "Status is required",
+		})
+	}
+
+	// Update the deployment status using the Discord service
+	err := h.discordService.UpdateDeploymentStatus(
+		req.Status,
+		req.BackendVersion,
+		req.FrontendVersion,
+		req.HealthPassed,
+	)
+
+	if err != nil {
+		log.Printf("Failed to update deployment status: %v", err)
+		return c.Status(500).JSON(fiber.Map{
+			"success": false,
+			"message": "Failed to update deployment status",
+			"error":   err.Error(),
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"message": "Deployment status updated successfully",
+		"status":  req.Status,
+		"version": req.BackendVersion,
 	})
 }
 
@@ -198,9 +328,67 @@ func (h *Handlers) UploadFiles(c *fiber.Ctx) error {
 		})
 	}
 
+	// Check memory availability before processing large files
+	var totalSizeMB float64
+	for _, file := range wavFiles {
+		totalSizeMB += float64(file.Size) / 1024 / 1024
+	}
+
+	// Memory check for large uploads (>100MB total)
+	if totalSizeMB > 100 {
+		canProceed, suggestion := h.memoryMonitor.CheckMemoryForUpload(totalSizeMB)
+		if !canProceed {
+			h.logger.Warn("Upload rejected due to memory constraints",
+				"total_size_mb", totalSizeMB,
+				"files_count", len(wavFiles),
+				"memory_suggestion", suggestion)
+			
+			return c.Status(507).JSON(fiber.Map{ // 507 Insufficient Storage
+				"success": false,
+				"message": "Insufficient memory available for upload",
+				"details": suggestion,
+				"total_size_mb": totalSizeMB,
+				"current_memory": h.memoryMonitor.GetMemoryStatsForAPI(),
+			})
+		}
+		
+		if suggestion == "memory_gc_helped" {
+			h.logger.Info("Memory freed via GC before large upload",
+				"total_size_mb", totalSizeMB,
+				"files_count", len(wavFiles))
+		}
+	}
+
 	// Process files
 	summary, err := h.fileService.ProcessFiles(wavFiles)
 	if err != nil {
+		// Log upload failure using production logger
+		if h.productionLogger != nil {
+			var totalSize int64
+			for _, file := range wavFiles {
+				totalSize += file.Size
+			}
+			
+			// Get current memory usage for context
+			var memStats runtime.MemStats
+			runtime.ReadMemStats(&memStats)
+			
+			ctx := context.Background()
+			failureContext := services.UploadFailureContext{
+				Filename:    fmt.Sprintf("batch_upload_%d_files", len(wavFiles)),
+				FileSize:    totalSize,
+				UserIP:      c.IP(),
+				Error:       err,
+				Operation:   "multipart_upload",
+				RequestID:   c.Get("X-Request-ID", "unknown"),
+				Timestamp:   time.Now(),
+				Component:   "handlers.UploadFiles",
+				UserAgent:   c.Get("User-Agent"),
+				ContentType: c.Get("Content-Type"),
+			}
+			h.productionLogger.LogUploadFailure(ctx, failureContext)
+		}
+		
 		h.wsHub.BroadcastError(err.Error())
 		return c.Status(500).JSON(fiber.Map{
 			"success": false,
@@ -611,15 +799,43 @@ func (h *Handlers) CompleteTUSUpload(c *fiber.Ctx) error {
 	}
 	defer reader.Close()
 
-	// Read all data
-	data, err := io.ReadAll(reader)
+	// Calculate hash for integrity check
+	fileHash, err := h.fileService.GetMetadataService().CalculateStreamingHash(reader)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("Failed to calculate hash: %v", err)})
+	}
+
+	// Reset reader for upload
+	reader, err = tusService.GetUploadReader(uploadID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
+	defer reader.Close()
 
-	// Upload to MinIO
-	result, err := h.minioService.UploadFile(data, info.Filename)
+	// Upload to MinIO using streaming (zero-copy)
+	result, err := h.minioService.UploadFileStreaming(reader, info.Filename, info.Size, fileHash)
 	if err != nil {
+		// Log TUS upload completion failure
+		if h.productionLogger != nil {
+			var memStats runtime.MemStats
+			runtime.ReadMemStats(&memStats)
+			
+			ctx := context.Background()
+			failureContext := services.UploadFailureContext{
+				Filename:    info.Filename,
+				FileSize:    info.Size,
+				UserIP:      c.IP(),
+				Error:       err,
+				Operation:   "tus_complete_upload",
+				RequestID:   c.Get("X-Request-ID", "unknown"),
+				Timestamp:   time.Now(),
+				Component:   "handlers.CompleteTUSUpload",
+				UserAgent:   c.Get("User-Agent"),
+				ContentType: c.Get("Content-Type"),
+			}
+			h.productionLogger.LogUploadFailure(ctx, failureContext)
+		}
+		
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
 

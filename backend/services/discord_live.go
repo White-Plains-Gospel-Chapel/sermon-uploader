@@ -433,6 +433,15 @@ func (d *DiscordLiveService) CleanupOldMessages(hours int) {
 	}
 }
 
+// Production logger interface compatibility methods
+func (d *DiscordLiveService) CreateMessage(content string) (string, error) {
+	return d.createMessage(content, nil)
+}
+
+func (d *DiscordLiveService) UpdateMessage(messageID, content string) error {
+	return d.updateMessage(messageID, content, nil)
+}
+
 // Backward compatibility methods
 
 // SendNotification sends a simple notification (backward compatibility)

@@ -27,6 +27,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
+      - name: Notify Discord - Test Started
+        run: |
+          if [[ -n "${{ secrets.DISCORD_WEBHOOK_ENDPOINT }}" ]]; then
+            curl -X POST "${{ secrets.DISCORD_WEBHOOK_ENDPOINT }}" \
+              -H "Content-Type: application/json" \
+              -H "X-GitHub-Event: workflow_job" \
+              -H "X-Hub-Signature: sha1=$(echo -n '{"action":"in_progress","workflow_job":{"name":"Test","status":"in_progress","workflow_name":"CI/CD Pipeline","head_sha":"${{ github.sha }}","head_commit":{"message":"${{ github.event.head_commit.message }}"}}}' | openssl dgst -sha1 -hmac '${{ secrets.GITHUB_WEBHOOK_SECRET }}' | sed 's/^.* //')" \
+              -d '{"action":"in_progress","workflow_job":{"name":"Test","status":"in_progress","workflow_name":"CI/CD Pipeline","head_sha":"${{ github.sha }}","head_commit":{"message":"${{ github.event.head_commit.message }}"}}}' || true
+          fi
+      
       - name: Check what changed
         id: check
         run: |
@@ -91,6 +101,21 @@ jobs:
           }
           
           echo "✅ Frontend build successful!"
+          
+      - name: Notify Discord - Test Completed
+        if: always()
+        run: |
+          if [[ -n "${{ secrets.DISCORD_WEBHOOK_ENDPOINT }}" ]]; then
+            STATUS="success"
+            if [[ "${{ job.status }}" != "success" ]]; then
+              STATUS="failure"
+            fi
+            curl -X POST "${{ secrets.DISCORD_WEBHOOK_ENDPOINT }}" \
+              -H "Content-Type: application/json" \
+              -H "X-GitHub-Event: workflow_job" \
+              -H "X-Hub-Signature: sha1=$(echo -n '{"action":"completed","workflow_job":{"name":"Test","status":"completed","conclusion":"'$STATUS'","workflow_name":"CI/CD Pipeline","head_sha":"${{ github.sha }}","head_commit":{"message":"${{ github.event.head_commit.message }}"}}}' | openssl dgst -sha1 -hmac '${{ secrets.GITHUB_WEBHOOK_SECRET }}' | sed 's/^.* //')" \
+              -d '{"action":"completed","workflow_job":{"name":"Test","status":"completed","conclusion":"'$STATUS'","workflow_name":"CI/CD Pipeline","head_sha":"${{ github.sha }}","head_commit":{"message":"${{ github.event.head_commit.message }}"}}}' || true
+          fi
 
   # Stage 2: Build Docker image (only on master)
   build:
@@ -101,6 +126,16 @@ jobs:
     
     steps:
       - uses: actions/checkout@v4
+      
+      - name: Notify Discord - Build Started
+        run: |
+          if [[ -n "${{ secrets.DISCORD_WEBHOOK_ENDPOINT }}" ]]; then
+            curl -X POST "${{ secrets.DISCORD_WEBHOOK_ENDPOINT }}" \
+              -H "Content-Type: application/json" \
+              -H "X-GitHub-Event: workflow_job" \
+              -H "X-Hub-Signature: sha1=$(echo -n '{"action":"in_progress","workflow_job":{"name":"Build","status":"in_progress","workflow_name":"CI/CD Pipeline","head_sha":"${{ github.sha }}","head_commit":{"message":"${{ github.event.head_commit.message }}"}}}' | openssl dgst -sha1 -hmac '${{ secrets.GITHUB_WEBHOOK_SECRET }}' | sed 's/^.* //')" \
+              -d '{"action":"in_progress","workflow_job":{"name":"Build","status":"in_progress","workflow_name":"CI/CD Pipeline","head_sha":"${{ github.sha }}","head_commit":{"message":"${{ github.event.head_commit.message }}"}}}' || true
+          fi
       
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -126,6 +161,21 @@ jobs:
           name: docker-image
           path: /tmp/image.tar
           retention-days: 1
+          
+      - name: Notify Discord - Build Completed
+        if: always()
+        run: |
+          if [[ -n "${{ secrets.DISCORD_WEBHOOK_ENDPOINT }}" ]]; then
+            STATUS="success"
+            if [[ "${{ job.status }}" != "success" ]]; then
+              STATUS="failure"
+            fi
+            curl -X POST "${{ secrets.DISCORD_WEBHOOK_ENDPOINT }}" \
+              -H "Content-Type: application/json" \
+              -H "X-GitHub-Event: workflow_job" \
+              -H "X-Hub-Signature: sha1=$(echo -n '{"action":"completed","workflow_job":{"name":"Build","status":"completed","conclusion":"'$STATUS'","workflow_name":"CI/CD Pipeline","head_sha":"${{ github.sha }}","head_commit":{"message":"${{ github.event.head_commit.message }}"}}}' | openssl dgst -sha1 -hmac '${{ secrets.GITHUB_WEBHOOK_SECRET }}' | sed 's/^.* //')" \
+              -d '{"action":"completed","workflow_job":{"name":"Build","status":"completed","conclusion":"'$STATUS'","workflow_name":"CI/CD Pipeline","head_sha":"${{ github.sha }}","head_commit":{"message":"${{ github.event.head_commit.message }}"}}}' || true
+          fi
 
   # Stage 3: Deploy to Pi (only after successful build)
   deploy:
@@ -136,6 +186,16 @@ jobs:
     
     steps:
       - uses: actions/checkout@v4
+      
+      - name: Notify Discord - Deploy Started
+        run: |
+          if [[ -n "${{ secrets.DISCORD_WEBHOOK_ENDPOINT }}" ]]; then
+            curl -X POST "${{ secrets.DISCORD_WEBHOOK_ENDPOINT }}" \
+              -H "Content-Type: application/json" \
+              -H "X-GitHub-Event: workflow_job" \
+              -H "X-Hub-Signature: sha1=$(echo -n '{"action":"in_progress","workflow_job":{"name":"Deploy","status":"in_progress","workflow_name":"CI/CD Pipeline","head_sha":"${{ github.sha }}","head_commit":{"message":"${{ github.event.head_commit.message }}"}}}' | openssl dgst -sha1 -hmac '${{ secrets.GITHUB_WEBHOOK_SECRET }}' | sed 's/^.* //')" \
+              -d '{"action":"in_progress","workflow_job":{"name":"Deploy","status":"in_progress","workflow_name":"CI/CD Pipeline","head_sha":"${{ github.sha }}","head_commit":{"message":"${{ github.event.head_commit.message }}"}}}' || true
+          fi
       
       - name: Download image
         uses: actions/download-artifact@v4
@@ -229,11 +289,18 @@ jobs:
           
           echo "✅ Deployment successful!"
           
-          # Send Discord notification
-          if [ -n "$DISCORD_WEBHOOK_URL" ]; then
-            curl -X POST -H "Content-Type: application/json" \
-              -d "{\"embeds\":[{\"title\":\"✅ Deployment Successful\",\"description\":\"Version 1.1.0 deployed\",\"color\":65280,\"fields\":[{\"name\":\"Version\",\"value\":\"$DEPLOYED_VERSION\",\"inline\":true},{\"name\":\"Commit\",\"value\":\"${GITHUB_SHA:0:7}\",\"inline\":true}]}]}" \
-              $DISCORD_WEBHOOK_URL || true
+          # Notify Discord - Deploy Completed
+          if [[ -n "${{ secrets.DISCORD_WEBHOOK_ENDPOINT }}" ]]; then
+            STATUS="success"
+            if [[ "$DEPLOYED_VERSION" != "1.1.0" ]]; then
+              STATUS="failure"
+            fi
+            echo "Sending Discord webhook notification..."
+            curl -X POST "${{ secrets.DISCORD_WEBHOOK_ENDPOINT }}" \
+              -H "Content-Type: application/json" \
+              -H "X-GitHub-Event: workflow_job" \
+              -H "X-Hub-Signature: sha1=$(echo -n '{"action":"completed","workflow_job":{"name":"Deploy","status":"completed","conclusion":"'$STATUS'","workflow_name":"CI/CD Pipeline","head_sha":"${{ github.sha }}","head_commit":{"message":"${{ github.event.head_commit.message }}"}}}' | openssl dgst -sha1 -hmac '${{ secrets.GITHUB_WEBHOOK_SECRET }}' | sed 's/^.* //')" \
+              -d '{"action":"completed","workflow_job":{"name":"Deploy","status":"completed","conclusion":"'$STATUS'","workflow_name":"CI/CD Pipeline","head_sha":"${{ github.sha }}","head_commit":{"message":"${{ github.event.head_commit.message }}"}}}' || true
           fi
           
           # Cleanup old images

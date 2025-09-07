@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"runtime"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -36,6 +38,27 @@ func (h *Handlers) GetPresignedURL(c *fiber.Ctx) error {
 	// Check for duplicates first using filename-based detection (O(1) operation)
 	isDuplicate, err := h.minioService.CheckDuplicateByFilename(req.Filename)
 	if err != nil {
+		// Log the duplicate check failure
+		if h.productionLogger != nil {
+			var memStats runtime.MemStats
+			runtime.ReadMemStats(&memStats)
+			
+			ctx := context.Background()
+			failureContext := services.UploadFailureContext{
+				Filename:    req.Filename,
+				FileSize:    req.FileSize,
+				UserIP:      c.IP(),
+				Error:       err,
+				Operation:   "duplicate_check",
+				RequestID:   c.Get("X-Request-ID", "unknown"),
+				Timestamp:   time.Now(),
+				Component:   "handlers.GetPresignedURL",
+				UserAgent:   c.Get("User-Agent"),
+				ContentType: c.Get("Content-Type"),
+			}
+			h.productionLogger.LogUploadFailure(ctx, failureContext)
+		}
+		
 		return c.Status(500).JSON(fiber.Map{
 			"error":   true,
 			"message": "Failed to check for duplicates",
@@ -54,6 +77,27 @@ func (h *Handlers) GetPresignedURL(c *fiber.Ctx) error {
 	// Generate smart presigned URL based on file size (valid for 1 hour)
 	presignedURL, isLargeFile, err := h.minioService.GeneratePresignedUploadURLSmart(req.Filename, req.FileSize, time.Hour)
 	if err != nil {
+		// Log presigned URL generation failure
+		if h.productionLogger != nil {
+			var memStats runtime.MemStats
+			runtime.ReadMemStats(&memStats)
+			
+			ctx := context.Background()
+			failureContext := services.UploadFailureContext{
+				Filename:    req.Filename,
+				FileSize:    req.FileSize,
+				UserIP:      c.IP(),
+				Error:       err,
+				Operation:   "generate_presigned_url",
+				RequestID:   c.Get("X-Request-ID", "unknown"),
+				Timestamp:   time.Now(),
+				Component:   "handlers.GetPresignedURL",
+				UserAgent:   c.Get("User-Agent"),
+				ContentType: c.Get("Content-Type"),
+			}
+			h.productionLogger.LogUploadFailure(ctx, failureContext)
+		}
+		
 		return c.Status(500).JSON(fiber.Map{
 			"error":   true,
 			"message": "Failed to generate upload URL",
@@ -105,6 +149,27 @@ func (h *Handlers) ProcessUploadedFile(c *fiber.Ctx) error {
 	// Check if file exists in MinIO
 	exists, err := h.minioService.FileExists(req.Filename)
 	if err != nil || !exists {
+		// Log file verification failure
+		if h.productionLogger != nil && err != nil {
+			var memStats runtime.MemStats
+			runtime.ReadMemStats(&memStats)
+			
+			ctx := context.Background()
+			failureContext := services.UploadFailureContext{
+				Filename:    req.Filename,
+				FileSize:    0, // Unknown at this point
+				UserIP:      c.IP(),
+				Error:       err,
+				Operation:   "file_verification",
+				RequestID:   c.Get("X-Request-ID", "unknown"),
+				Timestamp:   time.Now(),
+				Component:   "handlers.ProcessUploadedFile",
+				UserAgent:   c.Get("User-Agent"),
+				ContentType: c.Get("Content-Type"),
+			}
+			h.productionLogger.LogUploadFailure(ctx, failureContext)
+		}
+		
 		return c.Status(404).JSON(fiber.Map{
 			"error":   true,
 			"message": "File not found in storage",
@@ -114,6 +179,27 @@ func (h *Handlers) ProcessUploadedFile(c *fiber.Ctx) error {
 	// Get basic file info
 	fileInfo, err := h.minioService.GetFileInfo(req.Filename)
 	if err != nil {
+		// Log file info retrieval failure
+		if h.productionLogger != nil {
+			var memStats runtime.MemStats
+			runtime.ReadMemStats(&memStats)
+			
+			ctx := context.Background()
+			failureContext := services.UploadFailureContext{
+				Filename:    req.Filename,
+				FileSize:    0, // Unknown at this point
+				UserIP:      c.IP(),
+				Error:       err,
+				Operation:   "get_file_info",
+				RequestID:   c.Get("X-Request-ID", "unknown"),
+				Timestamp:   time.Now(),
+				Component:   "handlers.ProcessUploadedFile",
+				UserAgent:   c.Get("User-Agent"),
+				ContentType: c.Get("Content-Type"),
+			}
+			h.productionLogger.LogUploadFailure(ctx, failureContext)
+		}
+		
 		return c.Status(500).JSON(fiber.Map{
 			"error":   true,
 			"message": "Failed to get file info",

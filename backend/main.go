@@ -56,6 +56,24 @@ func main() {
 			runtime.GOMAXPROCS(0), cfg.GCTargetPercentage, cfg.MaxMemoryLimitMB)
 	}
 
+	// Initialize Discord live service for production logging
+	discordLiveService := services.NewDiscordLiveService(cfg.DiscordWebhookURL)
+
+	// Initialize production logger
+	productionLogger, err := services.NewProductionLogger(&services.ProductionLoggerConfig{
+		LogDir:            "./logs",
+		DiscordWebhookURL: cfg.DiscordWebhookURL,
+		MaxFileSize:       100 * 1024 * 1024, // 100MB
+		RetentionDays:     7,
+		AsyncLogging:      true,
+		BufferSize:        1000,
+		DiscordService:    discordLiveService,
+	})
+	if err != nil {
+		log.Printf("Failed to initialize production logger: %v", err)
+		productionLogger = nil
+	}
+
 	// Initialize services
 	minioService := services.NewMinIOService(cfg)
 	discordService := services.NewDiscordService(cfg.DiscordWebhookURL)
@@ -136,8 +154,8 @@ func main() {
 		app.Use(pprof.New())
 	}
 
-	// Initialize handlers
-	h := handlers.New(fileService, minioService, discordService, wsHub, cfg)
+	// Initialize handlers with production logger
+	h := handlers.New(fileService, minioService, discordService, discordLiveService, wsHub, cfg, productionLogger)
 
 	// Routes
 	api := app.Group("/api")
@@ -198,6 +216,10 @@ func main() {
 		// Test endpoints
 		api.Post("/test/discord", h.TestDiscord)
 		api.Get("/test/minio", h.TestMinIO)
+		api.Post("/test/github/webhook", h.TestGitHubWebhook)
+
+		// GitHub webhook endpoint
+		api.Post("/github/webhook", h.GitHubWebhook)
 
 		// Migration endpoint
 		api.Post("/migrate/minio", h.MigrateMinIO)
@@ -228,10 +250,16 @@ func main() {
 		return c.SendFile("./frontend/out/index.html")
 	})
 
-	// Send startup notification
+	// Send startup notification using live update system
 	go func() {
-		if err := discordService.SendStartupNotification("🚀 Sermon Uploader Pi started successfully!"); err != nil {
-			log.Printf("Failed to send startup notification: %v", err)
+		if err := discordService.StartDeploymentNotification(); err != nil {
+			log.Printf("Failed to start deployment notification: %v", err)
+		} else {
+			// Update to show service is starting
+			time.Sleep(1 * time.Second)
+			if err := discordService.UpdateDeploymentStatus("started", config.GetFullVersion("backend"), "", true); err != nil {
+				log.Printf("Failed to update startup status: %v", err)
+			}
 		}
 	}()
 
