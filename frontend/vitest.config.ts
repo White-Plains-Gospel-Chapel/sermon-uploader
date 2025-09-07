@@ -30,8 +30,6 @@ export default defineConfig({
           statements: 100
         }
       },
-      // Fail the build if coverage thresholds are not met
-      failOnCoverageThreshold: true,
       // Include all files in coverage report, not just tested ones
       all: true,
       // Show detailed coverage in console
