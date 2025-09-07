@@ -1,0 +1,145 @@
+name: Notify for Manual Deployment
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get commit info
+        id: commit
+        run: |
+          echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "message=$(git log -1 --pretty=%B | head -1)" >> $GITHUB_OUTPUT
+          echo "author=$(git log -1 --pretty=%an)" >> $GITHUB_OUTPUT
+
+      - name: Notify Discord for Manual Deployment
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK" ]; then
+            echo "⚠️ Discord webhook not configured, skipping notification"
+            exit 0
+          fi
+          
+          curl -X POST $DISCORD_WEBHOOK \
+            -H "Content-Type: application/json" \
+            -d @- << EOF
+          {
+            "embeds": [{
+              "title": "🚀 Ready for Deployment to Pi",
+              "description": "New code is ready to deploy to your Raspberry Pi",
+              "color": 3447003,
+              "fields": [
+                {
+                  "name": "📝 Commit",
+                  "value": "\`${{ steps.commit.outputs.sha_short }}\` - ${{ steps.commit.outputs.message }}",
+                  "inline": false
+                },
+                {
+                  "name": "👤 Author",
+                  "value": "${{ steps.commit.outputs.author }}",
+                  "inline": true
+                },
+                {
+                  "name": "🌿 Branch",
+                  "value": "\`${GITHUB_REF_NAME}\`",
+                  "inline": true
+                },
+                {
+                  "name": "📋 Deployment Instructions",
+                  "value": "SSH into your Pi and run:\n\`\`\`bash\ncd /home/gaius/sermon-uploader\ngit pull\n./deploy-from-pi.sh\n\`\`\`",
+                  "inline": false
+                }
+              ],
+              "footer": {
+                "text": "GitHub Actions",
+                "icon_url": "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
+              },
+              "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
+            }]
+          }
+          EOF
+          
+          echo "✅ Deployment notification sent to Discord"
+
+      - name: Create deployment instructions artifact
+        run: |
+          cat > deployment-instructions.txt << 'EOF'
+          ====================================
+          🚀 MANUAL DEPLOYMENT REQUIRED
+          ====================================
+          
+          Your code has been pushed to GitHub and is ready for deployment.
+          Since your Raspberry Pi is on a private network, you need to manually deploy.
+          
+          DEPLOYMENT STEPS:
+          ----------------
+          1. Connect to your network (or use VPN)
+          
+          2. SSH into your Raspberry Pi:
+             ssh gaius@192.168.1.127
+          
+          3. Navigate to the project:
+             cd /home/gaius/sermon-uploader
+          
+          4. Pull the latest code:
+             git pull origin master
+          
+          5. Run the deployment script:
+             ./deploy-from-pi.sh
+          
+          The deployment script will:
+          - Set up TLS certificates (if needed)
+          - Build the backend
+          - Restart services
+          - Run health checks
+          
+          QUICK DEPLOY (one command):
+          ---------------------------
+          ssh gaius@192.168.1.127 "cd /home/gaius/sermon-uploader && git pull && ./deploy-from-pi.sh"
+          
+          SERVICE URLS AFTER DEPLOYMENT:
+          ------------------------------
+          - MinIO API: https://192.168.1.127:9000
+          - MinIO Console: https://192.168.1.127:9001
+          - Backend API: http://192.168.1.127:8000
+          
+          TEST THE DEPLOYMENT:
+          -------------------
+          curl http://192.168.1.127:8000/api/health
+          
+          EOF
+          
+          echo "📄 Deployment instructions created"
+
+      - name: Upload deployment instructions
+        uses: actions/upload-artifact@v3
+        with:
+          name: deployment-instructions
+          path: deployment-instructions.txt
+          retention-days: 7
+
+      - name: Summary
+        run: |
+          echo "## 🎉 Code Ready for Deployment" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Your code has been successfully tested and is ready to deploy to your Raspberry Pi." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📋 Quick Deploy Command:" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo 'ssh gaius@192.168.1.127 "cd /home/gaius/sermon-uploader && git pull && ./deploy-from-pi.sh"' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔗 Service URLs:" >> $GITHUB_STEP_SUMMARY
+          echo "- Backend API: http://192.168.1.127:8000" >> $GITHUB_STEP_SUMMARY
+          echo "- MinIO: https://192.168.1.127:9000" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Deployment notification has been sent to Discord (if configured)" >> $GITHUB_STEP_SUMMARY
