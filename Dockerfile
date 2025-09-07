@@ -20,7 +20,7 @@ COPY backend/go.mod backend/go.sum ./
 RUN go mod download
 
 COPY backend/ ./
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o sermon-uploader .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -a -installsuffix cgo -o sermon-uploader .
 
 # Final Pi-optimized image
 FROM alpine:latest
