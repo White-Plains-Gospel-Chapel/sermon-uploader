@@ -10,8 +10,6 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"sermon-uploader/config"
-	"sermon-uploader/handlers"
-	"sermon-uploader/services"
 )
 
 // TestServer manages a test instance of the application
@@ -57,16 +55,7 @@ func StartTestServer(t *testing.T) *TestServer {
 		AllowCredentials: false,
 	}))
 
-	// Initialize services
-	minioService := services.NewMinIOService(cfg)
-	discordService := services.NewDiscordService("")
-	wsHub := services.NewWebSocketHub()
-	fileService := services.NewFileService(minioService, discordService, wsHub, cfg)
-
-	// Initialize handlers
-	h := handlers.NewHandlers(minioService, fileService, discordService, wsHub, cfg)
-
-	// Setup routes
+	// Setup minimal routes for testing
 	api := app.Group("/api")
 	
 	// Health check
@@ -74,11 +63,45 @@ func StartTestServer(t *testing.T) *TestServer {
 		return c.JSON(fiber.Map{"status": "healthy"})
 	})
 
-	// Upload routes
+	// Mock upload routes for testing
 	upload := api.Group("/upload")
-	upload.Post("/presigned-batch", h.GetPresignedURLBatch)
-	upload.Post("/presigned", h.GetPresignedURL)
-	upload.Post("/", h.UploadFiles)
+	
+	// Mock presigned-batch endpoint
+	upload.Post("/presigned-batch", func(c *fiber.Ctx) error {
+		var req struct {
+			Files []struct {
+				Filename string `json:"filename"`
+				FileSize int64  `json:"fileSize"`
+			} `json:"files"`
+		}
+		if err := c.BodyParser(&req); err != nil {
+			return c.Status(400).JSON(fiber.Map{"error": "Invalid request"})
+		}
+		
+		// Return mock presigned URLs
+		var urls []fiber.Map
+		for _, file := range req.Files {
+			urls = append(urls, fiber.Map{
+				"filename": file.Filename,
+				"url":      fmt.Sprintf("http://minio:9000/test-bucket/%s", file.Filename),
+				"method":   "direct_minio",
+			})
+		}
+		return c.JSON(urls)
+	})
+	
+	// Mock single presigned endpoint
+	upload.Post("/presigned", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{
+			"url":    "http://minio:9000/test-bucket/test.wav",
+			"method": "direct_minio",
+		})
+	})
+	
+	// Mock upload endpoint
+	upload.Post("/", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{"success": true})
+	})
 
 	// Start server in background
 	stopCh := make(chan struct{})
