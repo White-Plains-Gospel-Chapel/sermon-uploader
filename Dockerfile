@@ -20,7 +20,17 @@ COPY backend/go.mod backend/go.sum ./
 RUN go mod download
 
 COPY backend/ ./
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -a -installsuffix cgo -o sermon-uploader .
+
+# Build with version information
+ARG VERSION=1.1.0
+ARG GIT_COMMIT=unknown
+ARG BUILD_TIME
+
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+    -ldflags="-X 'sermon-uploader/config.Version=${VERSION}' \
+              -X 'sermon-uploader/config.GitCommit=${GIT_COMMIT}' \
+              -X 'sermon-uploader/config.BuildTime=${BUILD_TIME}'" \
+    -a -installsuffix cgo -o sermon-uploader .
 
 # Final Pi-optimized image
 FROM alpine:latest

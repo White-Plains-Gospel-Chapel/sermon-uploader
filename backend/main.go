@@ -143,6 +143,7 @@ func main() {
 	api := app.Group("/api")
 	{
 		api.Get("/health", h.HealthCheck)
+		api.Get("/version", h.GetVersion)
 		api.Get("/status", h.GetStatus)
 		api.Get("/dashboard", h.GetDashboard)
 		api.Post("/upload", h.UploadFiles)

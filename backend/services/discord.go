@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	
+	"sermon-uploader/config"
 )
 
 type DiscordService struct {
@@ -49,7 +51,7 @@ func (d *DiscordService) SendNotification(title, description string, color int, 
 		Color:       color,
 		Timestamp:   time.Now().UTC().Format(time.RFC3339),
 		Footer: map[string]interface{}{
-			"text": "Sermon Uploader v2.0 (Go)",
+			"text": fmt.Sprintf("Sermon Uploader v%s", config.GetFullVersion("backend")),
 		},
 		Fields: fields,
 	}
@@ -77,11 +79,29 @@ func (d *DiscordService) SendNotification(title, description string, color int, 
 }
 
 func (d *DiscordService) SendStartupNotification(message string) error {
+	fields := []DiscordField{
+		{
+			Name:   "Version",
+			Value:  config.GetFullVersion("backend"),
+			Inline: true,
+		},
+		{
+			Name:   "Build Time",
+			Value:  config.BuildTime,
+			Inline: true,
+		},
+		{
+			Name:   "Git Commit",
+			Value:  config.GitCommit,
+			Inline: true,
+		},
+	}
+	
 	return d.SendNotification(
 		"🚀 Sermon Uploader Started",
 		message,
 		0x00ff00, // Green
-		nil,
+		fields,
 	)
 }
 
@@ -246,4 +266,53 @@ func (d *DiscordService) SendError(message string) error {
 		0xff0000, // Red
 		nil,
 	)
+}
+
+// SendDeploymentNotification sends a notification after successful deployment
+func (d *DiscordService) SendDeploymentNotification(success bool, frontendVersion, backendVersion string) error {
+	var title, description string
+	var color int
+	
+	if success {
+		title = "✅ Deployment Successful"
+		description = "New version deployed and verified"
+		color = 0x00ff00 // Green
+	} else {
+		title = "❌ Deployment Failed"
+		description = "Deployment verification failed"
+		color = 0xff0000 // Red
+	}
+	
+	fields := []DiscordField{
+		{
+			Name:   "Backend Version",
+			Value:  backendVersion,
+			Inline: true,
+		},
+		{
+			Name:   "Frontend Version",
+			Value:  frontendVersion,
+			Inline: true,
+		},
+		{
+			Name:   "Deployed At",
+			Value:  time.Now().Format("2006-01-02 15:04:05 MST"),
+			Inline: false,
+		},
+	}
+	
+	if success {
+		fields = append(fields, DiscordField{
+			Name:   "Health Check",
+			Value:  "✅ Passed",
+			Inline: true,
+		})
+		fields = append(fields, DiscordField{
+			Name:   "Version Match",
+			Value:  "✅ Verified",
+			Inline: true,
+		})
+	}
+	
+	return d.SendNotification(title, description, color, fields)
 }

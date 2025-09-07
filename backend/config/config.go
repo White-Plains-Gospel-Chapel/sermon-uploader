@@ -63,6 +63,9 @@ type Config struct {
 
 	// Large File Upload Configuration
 	LargeFileThresholdMB int64 // Files larger than this (MB) use direct MinIO URLs to bypass CloudFlare 100MB limit
+
+	// Environment
+	Environment string // development, staging, production
 }
 
 func New() *Config {
@@ -156,6 +159,9 @@ func New() *Config {
 
 		// Large file configuration
 		LargeFileThresholdMB: largeFileThresholdMB,
+
+		// Environment
+		Environment: getEnv("ENV", "production"),
 	}
 }
 

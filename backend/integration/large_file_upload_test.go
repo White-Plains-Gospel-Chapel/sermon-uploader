@@ -48,6 +48,18 @@ type UploadClient struct {
 	minioClient *minio.Client
 }
 
+// VersionInfo represents the API version response
+type VersionInfo struct {
+	Version      string                 `json:"version"`
+	Service      string                 `json:"service"`
+	FullVersion  string                 `json:"fullVersion"`
+	BuildTime    string                 `json:"buildTime"`
+	GitCommit    string                 `json:"gitCommit"`
+	GoVersion    string                 `json:"goVersion"`
+	Features     map[string]interface{} `json:"features"`
+	Environment  string                 `json:"environment"`
+}
+
 // NewUploadClient creates a new upload client with MinIO access
 func NewUploadClient(baseURL string) (*UploadClient, error) {
 	// Create MinIO client for duplicate management
@@ -249,6 +261,45 @@ func (c *UploadClient) CompleteUpload(filename string) error {
 	return nil
 }
 
+// VerifyVersion checks the API version matches expected version
+func (c *UploadClient) VerifyVersion(expectedVersion string) error {
+	resp, err := c.httpClient.Get(c.baseURL + "/api/version")
+	if err != nil {
+		return fmt.Errorf("failed to get version: %w", err)
+	}
+	defer resp.Body.Close()
+	
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("version endpoint returned status %d", resp.StatusCode)
+	}
+	
+	var version VersionInfo
+	if err := json.NewDecoder(resp.Body).Decode(&version); err != nil {
+		return fmt.Errorf("failed to decode version: %w", err)
+	}
+	
+	if version.Version != expectedVersion {
+		return fmt.Errorf("version mismatch: expected %s, got %s", expectedVersion, version.Version)
+	}
+	
+	return nil
+}
+
+// TestVersionVerification checks that the API reports the correct version
+func TestVersionVerification(t *testing.T) {
+	client, err := NewUploadClient(apiHost)
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	
+	expectedVersion := "1.1.0"
+	if err := client.VerifyVersion(expectedVersion); err != nil {
+		t.Errorf("Version verification failed: %v", err)
+	}
+	
+	t.Logf("✅ API version verified: %s", expectedVersion)
+}
+
 // TestHealthCheck verifies the API is accessible
 func TestHealthCheck(t *testing.T) {
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -280,6 +331,11 @@ func TestSingleLargeFileUpload(t *testing.T) {
 	client, err := NewUploadClient(apiHost)
 	if err != nil {
 		t.Fatalf("Failed to create upload client: %v", err)
+	}
+	
+	// Verify API version first
+	if err := client.VerifyVersion("1.1.0"); err != nil {
+		t.Logf("⚠️  Version verification failed: %v", err)
 	}
 	
 	// Get test files from Pi

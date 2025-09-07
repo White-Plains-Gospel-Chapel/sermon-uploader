@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"mime/multipart"
 	"strings"
 	"time"
@@ -21,6 +22,8 @@ type Handlers struct {
 	discordService *services.DiscordService
 	wsHub          *services.WebSocketHub
 	config         *config.Config
+	logger         *slog.Logger
+	startTime      time.Time
 }
 
 type StatusResponse struct {
@@ -38,14 +41,18 @@ func New(fileService *services.FileService, minioService *services.MinIOService,
 		discordService: discordService,
 		wsHub:          wsHub,
 		config:         cfg,
+		logger:         slog.Default(),
+		startTime:      time.Now(),
 	}
 }
 
 func (h *Handlers) HealthCheck(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
-		"status":    "healthy",
-		"timestamp": fiber.Map{"now": "ok"},
-		"service":   "sermon-uploader-go",
+		"status":      "healthy",
+		"timestamp":   fiber.Map{"now": "ok"},
+		"service":     "sermon-uploader-go",
+		"version":     config.Version,
+		"fullVersion": config.GetFullVersion("backend"),
 	})
 }
 

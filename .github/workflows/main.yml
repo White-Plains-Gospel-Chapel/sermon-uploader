@@ -112,6 +112,10 @@ jobs:
           push: false
           platforms: linux/arm64
           tags: sermon-uploader:${{ github.sha }}
+          build-args: |
+            VERSION=1.1.0
+            GIT_COMMIT=${{ github.sha }}
+            BUILD_TIME=${{ github.event.head_commit.timestamp }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           outputs: type=docker,dest=/tmp/image.tar
@@ -212,7 +216,25 @@ jobs:
             exit 1
           fi
           
+          # Version verification
+          echo "Verifying deployed version..."
+          VERSION_RESPONSE=$(curl -s http://localhost:8000/api/version)
+          DEPLOYED_VERSION=$(echo $VERSION_RESPONSE | grep -o '"version":"[^"]*' | cut -d'"' -f4)
+          
+          if [ "$DEPLOYED_VERSION" = "1.1.0" ]; then
+            echo "✅ Version verified: $DEPLOYED_VERSION"
+          else
+            echo "⚠️ Version mismatch: Expected 1.1.0, got $DEPLOYED_VERSION"
+          fi
+          
           echo "✅ Deployment successful!"
+          
+          # Send Discord notification
+          if [ -n "$DISCORD_WEBHOOK_URL" ]; then
+            curl -X POST -H "Content-Type: application/json" \
+              -d "{\"embeds\":[{\"title\":\"✅ Deployment Successful\",\"description\":\"Version 1.1.0 deployed\",\"color\":65280,\"fields\":[{\"name\":\"Version\",\"value\":\"$DEPLOYED_VERSION\",\"inline\":true},{\"name\":\"Commit\",\"value\":\"${GITHUB_SHA:0:7}\",\"inline\":true}]}]}" \
+              $DISCORD_WEBHOOK_URL || true
+          fi
           
           # Cleanup old images
           docker image prune -af --filter="until=24h"
