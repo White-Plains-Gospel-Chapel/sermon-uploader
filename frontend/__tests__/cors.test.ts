@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from '@jest/globals'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 
 describe('MinIO CORS Configuration', () => {
   const MINIO_URL = 'http://192.168.1.127:9000'
@@ -66,7 +66,7 @@ describe('MinIO CORS Configuration', () => {
         body: testFile
       })
       
-      expect(uploadResponse.status).toBeOneOf([200, 204])
+      expect([200, 204]).toContain(uploadResponse.status)
       expect(uploadResponse.headers.get('Access-Control-Allow-Origin')).toBeTruthy()
     })
     
@@ -117,7 +117,7 @@ describe('MinIO CORS Configuration', () => {
         xhr.send(testFile)
       })
       
-      expect(uploadResult.status).toBeOneOf([200, 204])
+      expect([200, 204]).toContain(uploadResult.status)
       expect(uploadResult.progressEvents).toBeGreaterThan(0)
     })
   })
@@ -146,7 +146,7 @@ describe('MinIO CORS Configuration', () => {
 
 // Add custom matcher for multiple acceptable values
 expect.extend({
-  toBeOneOf(received, values) {
+  toBeOneOf(received: any, values: any[]) {
     const pass = values.includes(received)
     return {
       pass,
