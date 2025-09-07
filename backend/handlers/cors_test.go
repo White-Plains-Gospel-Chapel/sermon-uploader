@@ -23,6 +23,11 @@ type CORSTestSuite struct {
 
 // SetupSuite runs before all tests
 func (suite *CORSTestSuite) SetupSuite() {
+	// Skip these integration tests in CI or when running with -short flag
+	if testing.Short() {
+		suite.T().Skip("Skipping integration test in short mode")
+	}
+	
 	suite.backendURL = "http://localhost:8000"
 	suite.minioURL = "http://192.168.1.127:9000"
 	suite.client = &http.Client{

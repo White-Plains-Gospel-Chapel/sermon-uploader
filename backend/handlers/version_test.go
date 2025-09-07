@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -139,9 +140,31 @@ func TestVersionCompatibilityCheck(t *testing.T) {
 	}
 }
 
-// Helper function to be implemented
+// Helper function to check version compatibility
 func CheckVersionCompatibility(client, server string) bool {
-	// Extract major.minor version for compatibility check
-	// For now, this is a placeholder that will be implemented
-	return true // Will fail tests initially (TDD Red phase)
+	// Remove suffixes like -frontend, -backend
+	cleanVersion := func(v string) string {
+		if idx := strings.Index(v, "-"); idx > 0 {
+			return v[:idx]
+		}
+		return v
+	}
+	
+	clientClean := cleanVersion(client)
+	serverClean := cleanVersion(server)
+	
+	// Parse versions
+	clientParts := strings.Split(clientClean, ".")
+	serverParts := strings.Split(serverClean, ".")
+	
+	if len(clientParts) < 1 || len(serverParts) < 1 {
+		return false
+	}
+	
+	// Check major version compatibility
+	if clientParts[0] != serverParts[0] {
+		return false // Major version mismatch
+	}
+	
+	return true
 }
