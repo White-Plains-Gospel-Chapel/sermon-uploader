@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   backend:
-    image: ${DOCKER_USERNAME:-wpgcparish}/sermon-uploader-backend:pi5
+    image: gaiusr/sermon-uploader-backend:pi5
     container_name: sermon-uploader-backend
     ports:
       - "8000:8000"
@@ -31,7 +31,7 @@ services:
           memory: 256M
 
   frontend:
-    image: ${DOCKER_USERNAME:-wpgcparish}/sermon-uploader-frontend:pi5
+    image: gaiusr/sermon-uploader-frontend:pi5
     container_name: sermon-uploader-frontend
     ports:
       - "3000:3000"
