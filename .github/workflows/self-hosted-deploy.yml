@@ -248,7 +248,7 @@ jobs:
           
           # Check backend health
           for i in {1..30}; do
-            if curl -f http://localhost:8080/health 2>/dev/null; then
+            if curl -f http://localhost:8000/api/health 2>/dev/null; then
               echo "✅ Backend is healthy!"
               break
             fi
@@ -286,7 +286,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 🌐 Access URLs:" >> $GITHUB_STEP_SUMMARY
           echo "- **Frontend:** http://192.168.1.127:3000" >> $GITHUB_STEP_SUMMARY
-          echo "- **Backend API:** http://192.168.1.127:8080" >> $GITHUB_STEP_SUMMARY
+          echo "- **Backend API:** http://192.168.1.127:8000" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 📅 Deployment Time:" >> $GITHUB_STEP_SUMMARY
           echo "- **Timestamp:** $(date '+%Y-%m-%d %H:%M:%S %Z')" >> $GITHUB_STEP_SUMMARY
