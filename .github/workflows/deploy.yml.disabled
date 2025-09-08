@@ -1,89 +1,146 @@
-name: Deploy to Raspberry Pi
+name: Deploy to Production
 
 on:
   push:
-    branches: [main, master]
-  workflow_dispatch:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+    
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: frontend-react/package-lock.json
+    
+    - name: Test Backend
+      run: |
+        cd backend
+        go mod download
+        go test -v ./...
+    
+    - name: Build Backend
+      run: |
+        cd backend
+        go build -o sermon-uploader-test .
+    
+    - name: Test Frontend
+      run: |
+        cd frontend-react
+        npm ci
+        npm run build
+
   deploy:
-    name: Deploy to Pi
+    needs: test
     runs-on: self-hosted
-    timeout-minutes: 10
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
     
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          clean: true
-          fetch-depth: 1
-      
-      - name: Deploy
-        run: |
-          echo "🚀 Deploying commit: $(git rev-parse --short HEAD)"
-          
-          # Pull latest
-          git pull origin master || git pull origin main
-          
-          # Create working .env (NO http:// prefix for MINIO_ENDPOINT!)
-          cat > .env << 'EOL'
-          MINIO_ENDPOINT=localhost:9000
-          MINIO_ACCESS_KEY=gaius
-          MINIO_SECRET_KEY=John 3:16
-          MINIO_SECURE=false
-          MINIO_BUCKET=sermons
-          DISCORD_WEBHOOK_URL=${{ secrets.DISCORD_WEBHOOK_URL }}
-          WAV_SUFFIX=_raw
-          AAC_SUFFIX=_streamable
-          BATCH_THRESHOLD=2
-          PORT=8000
-          EOL
-          
-          echo "📝 Created .env with MINIO_ENDPOINT=localhost:9000 (no http:// prefix)"
-          
-          # Build locally
-          echo "🏗️ Building Docker image..."
-          docker build -t sermon-uploader:latest .
-          
-          # Stop and remove old container
-          echo "🔄 Restarting container..."
-          docker compose -f docker-compose.single.yml down || true
-          
-          # Start new container
-          docker compose -f docker-compose.single.yml up -d
-          
-          # Wait longer for MinIO to initialize
-          echo "⏳ Waiting 30s for MinIO to initialize..."
-          sleep 30
-          
-          # Health check with better retry logic
-          echo "🏥 Checking health..."
-          max_attempts=10
-          attempt=1
-          
-          while [ $attempt -le $max_attempts ]; do
-            echo "Attempt $attempt/$max_attempts..."
-            
-            if curl -f -s http://localhost:8000/api/health > /dev/null 2>&1; then
-              echo "✅ Health check passed!"
-              echo "Response: $(curl -s http://localhost:8000/api/health)"
-              break
-            fi
-            
-            if [ $attempt -eq $max_attempts ]; then
-              echo "❌ Health check failed after $max_attempts attempts"
-              echo "Container logs:"
-              docker compose -f docker-compose.single.yml logs --tail=100
-              exit 1
-            fi
-            
-            echo "Waiting 10s before retry..."
-            sleep 10
-            attempt=$((attempt + 1))
-          done
-          
-          # Clean up
-          docker image prune -af --filter="until=24h" || true
-          
-          echo "🎉 Deployment complete!"
-          docker ps --format "table {{.Names}}\t{{.Status}}"
+    - uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+    
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+    
+    - name: Build Backend
+      run: |
+        cd backend
+        go mod download
+        CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o sermon-uploader .
+    
+    - name: Build Frontend
+      run: |
+        cd frontend-react
+        npm ci
+        npm run build
+    
+    - name: Deploy Backend
+      run: |
+        sudo systemctl stop sermon-uploader || true
+        sudo cp backend/sermon-uploader /opt/sermon-uploader/
+        sudo chown gaius:gaius /opt/sermon-uploader/sermon-uploader
+        sudo chmod +x /opt/sermon-uploader/sermon-uploader
+        sudo systemctl start sermon-uploader
+        sudo systemctl enable sermon-uploader
+    
+    - name: Deploy Frontend
+      run: |
+        sudo rm -rf /opt/admin-dashboard/*
+        sudo cp -r frontend-react/.next /opt/admin-dashboard/
+        sudo cp -r frontend-react/public /opt/admin-dashboard/ 2>/dev/null || true
+        sudo cp frontend-react/package.json /opt/admin-dashboard/
+        sudo cp frontend-react/next.config.js /opt/admin-dashboard/
+        sudo chown -R www-data:www-data /opt/admin-dashboard
+        
+        # Install/update dependencies
+        cd /opt/admin-dashboard
+        sudo -u www-data npm ci --production
+        
+        # Restart frontend service
+        sudo pkill -f "next start" || true
+        sleep 2
+        sudo -u www-data nohup npm start > /dev/null 2>&1 &
+    
+    - name: Reload Nginx
+      run: sudo systemctl reload nginx
+    
+    - name: Health Check
+      run: |
+        sleep 10
+        curl -f http://localhost:8000/api/health || exit 1
+        curl -f http://localhost:3000 || exit 1
+        echo "✅ Deployment successful!"
+    
+    - name: Discord Notification
+      if: always()
+      run: |
+        if [ "${{ job.status }}" == "success" ]; then
+          curl -X POST "${{ secrets.DISCORD_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "embeds": [{
+                "title": "🚀 Deployment Successful",
+                "description": "WPGC Admin Platform deployed to production",
+                "color": 3066993,
+                "fields": [
+                  {"name": "Branch", "value": "${{ github.ref_name }}", "inline": true},
+                  {"name": "Commit", "value": "`${{ github.sha }}`", "inline": true},
+                  {"name": "Admin URL", "value": "https://admin.wpgc.church", "inline": false},
+                  {"name": "API URL", "value": "https://api.wpgc.church", "inline": false}
+                ],
+                "timestamp": "'$(date -Iseconds)'"
+              }]
+            }'
+        else
+          curl -X POST "${{ secrets.DISCORD_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "embeds": [{
+                "title": "❌ Deployment Failed",
+                "description": "WPGC Admin Platform deployment failed",
+                "color": 15158332,
+                "fields": [
+                  {"name": "Branch", "value": "${{ github.ref_name }}", "inline": true},
+                  {"name": "Commit", "value": "`${{ github.sha }}`", "inline": true}
+                ],
+                "timestamp": "'$(date -Iseconds)'"
+              }]
+            }'
+        fi
