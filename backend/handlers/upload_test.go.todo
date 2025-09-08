@@ -1,0 +1,343 @@
+package handlers_test
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/minio/minio-go/v7"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+
+	"sermon-uploader/config"
+	"sermon-uploader/handlers"
+	"sermon-uploader/services"
+)
+
+// MockMinIOService is a mock implementation of MinIOService for testing
+type MockMinIOService struct {
+	mock.Mock
+}
+
+// Implement all required methods for MinIOService
+func (m *MockMinIOService) PutFile(ctx context.Context, bucket, objectName string, reader io.Reader, size int64, contentType string) (*minio.UploadInfo, error) {
+	args := m.Called(ctx, bucket, objectName, reader, size, contentType)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*minio.UploadInfo), args.Error(1)
+}
+
+func (m *MockMinIOService) UploadFile(fileData []byte, originalFilename string) (*services.FileMetadata, error) {
+	args := m.Called(fileData, originalFilename)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*services.FileMetadata), args.Error(1)
+}
+
+func (m *MockMinIOService) TestConnection() error {
+	args := m.Called()
+	return args.Error(0)
+}
+
+func (m *MockMinIOService) GetClient() *minio.Client {
+	args := m.Called()
+	if args.Get(0) == nil {
+		return nil
+	}
+	return args.Get(0).(*minio.Client)
+}
+
+func (m *MockMinIOService) EnsureBucketExists() error {
+	args := m.Called()
+	return args.Error(0)
+}
+
+func (m *MockMinIOService) ListFiles() ([]map[string]interface{}, error) {
+	args := m.Called()
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]map[string]interface{}), args.Error(1)
+}
+
+func (m *MockMinIOService) GetFileCount() (int, error) {
+	args := m.Called()
+	return args.Int(0), args.Error(1)
+}
+
+func (m *MockMinIOService) CalculateFileHash(data []byte) string {
+	args := m.Called(data)
+	return args.String(0)
+}
+
+func (m *MockMinIOService) GetExistingHashes() (map[string]bool, error) {
+	args := m.Called()
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(map[string]bool), args.Error(1)
+}
+
+func (m *MockMinIOService) CheckDuplicateByFilename(filename string) (bool, error) {
+	args := m.Called(filename)
+	return args.Bool(0), args.Error(1)
+}
+
+func (m *MockMinIOService) GeneratePresignedUploadURLWithCORS(filename string, fileSize int64, expiry time.Duration) (string, bool, error) {
+	args := m.Called(filename, fileSize, expiry)
+	return args.String(0), args.Bool(1), args.Error(2)
+}
+
+func (m *MockMinIOService) ClearBucket() (*services.ClearBucketResult, error) {
+	args := m.Called()
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*services.ClearBucketResult), args.Error(1)
+}
+
+// TestUploadSingleFile tests uploading a single WAV file
+func TestUploadSingleFile(t *testing.T) {
+	// Create test app and mocks
+	app := fiber.New()
+	mockMinIO := new(MockMinIOService)
+	cfg := config.New()
+	
+	// Create handler with proper number of arguments (8 total)
+	handler := handlers.New(
+		nil,           // FileService
+		mockMinIO,     // MinIOService (using our mock)
+		nil,           // DiscordService
+		nil,           // DiscordLiveService
+		nil,           // WebSocketHub
+		cfg,           // Config
+		nil,           // ProductionLogger
+		nil,           // HashCache
+	)
+	
+	app.Post("/upload", handler.Upload)
+	
+	// Create test file data
+	fileContent := []byte("test audio content")
+	
+	// Setup mock expectations
+	expectedMetadata := &services.FileMetadata{
+		Filename:     "test.wav",
+		Size:         int64(len(fileContent)),
+		Hash:         "testhash123",
+		UploadedAt:   time.Now(),
+		ContentType:  "audio/wav",
+	}
+	
+	mockMinIO.On("UploadFile", fileContent, "test.wav").Return(expectedMetadata, nil)
+	
+	// Create multipart form data
+	body := new(bytes.Buffer)
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", "test.wav")
+	assert.NoError(t, err)
+	
+	_, err = part.Write(fileContent)
+	assert.NoError(t, err)
+	
+	err = writer.Close()
+	assert.NoError(t, err)
+	
+	// Create request
+	req := httptest.NewRequest("POST", "/upload", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	
+	// Perform request
+	resp, err := app.Test(req, -1)
+	assert.NoError(t, err)
+	
+	// Check response
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	
+	// Verify mock was called
+	mockMinIO.AssertExpectations(t)
+}
+
+// TestUploadWithoutFile tests uploading without providing a file
+func TestUploadWithoutFile(t *testing.T) {
+	// Create test app and mocks
+	app := fiber.New()
+	mockMinIO := new(MockMinIOService)
+	cfg := config.New()
+	
+	handler := handlers.New(nil, mockMinIO, nil, nil, nil, cfg, nil, nil)
+	app.Post("/upload", handler.Upload)
+	
+	// Create empty multipart form
+	body := new(bytes.Buffer)
+	writer := multipart.NewWriter(body)
+	err := writer.Close()
+	assert.NoError(t, err)
+	
+	// Create request
+	req := httptest.NewRequest("POST", "/upload", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	
+	// Perform request
+	resp, err := app.Test(req, -1)
+	assert.NoError(t, err)
+	
+	// Should return bad request
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// TestUploadWithMinIOError tests handling MinIO upload errors
+func TestUploadWithMinIOError(t *testing.T) {
+	// Create test app and mocks
+	app := fiber.New()
+	mockMinIO := new(MockMinIOService)
+	cfg := config.New()
+	
+	handler := handlers.New(nil, mockMinIO, nil, nil, nil, cfg, nil, nil)
+	app.Post("/upload", handler.Upload)
+	
+	// Create test file data
+	fileContent := []byte("test audio content")
+	
+	// Setup mock to return error
+	mockMinIO.On("UploadFile", fileContent, "test.wav").Return(nil, errors.New("MinIO connection error"))
+	
+	// Create multipart form data
+	body := new(bytes.Buffer)
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", "test.wav")
+	assert.NoError(t, err)
+	
+	_, err = part.Write(fileContent)
+	assert.NoError(t, err)
+	
+	err = writer.Close()
+	assert.NoError(t, err)
+	
+	// Create request
+	req := httptest.NewRequest("POST", "/upload", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	
+	// Perform request
+	resp, err := app.Test(req, -1)
+	assert.NoError(t, err)
+	
+	// Should return internal server error
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	
+	// Verify mock was called
+	mockMinIO.AssertExpectations(t)
+}
+
+// TestUploadLargeFile tests uploading a large file (500MB+)
+func TestUploadLargeFile(t *testing.T) {
+	// Skip this test in CI to save time
+	if testing.Short() {
+		t.Skip("Skipping large file test in short mode")
+	}
+	
+	// Create test app and mocks
+	app := fiber.New(fiber.Config{
+		BodyLimit: 1024 * 1024 * 1024, // 1GB limit for test
+	})
+	mockMinIO := new(MockMinIOService)
+	cfg := config.New()
+	
+	handler := handlers.New(nil, mockMinIO, nil, nil, nil, cfg, nil, nil)
+	app.Post("/upload", handler.Upload)
+	
+	// Create large test file data (500MB simulation - just use smaller data for test)
+	fileSize := 1024 * 1024 // 1MB for actual test
+	fileContent := make([]byte, fileSize)
+	
+	// Setup mock expectations
+	expectedMetadata := &services.FileMetadata{
+		Filename:     "large-sermon.wav",
+		Size:         int64(fileSize),
+		Hash:         "largefilehash",
+		UploadedAt:   time.Now(),
+		ContentType:  "audio/wav",
+	}
+	
+	mockMinIO.On("UploadFile", fileContent, "large-sermon.wav").Return(expectedMetadata, nil)
+	
+	// Create multipart form data
+	body := new(bytes.Buffer)
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", "large-sermon.wav")
+	assert.NoError(t, err)
+	
+	_, err = part.Write(fileContent)
+	assert.NoError(t, err)
+	
+	err = writer.Close()
+	assert.NoError(t, err)
+	
+	// Create request
+	req := httptest.NewRequest("POST", "/upload", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	
+	// Perform request with longer timeout
+	resp, err := app.Test(req, 30*time.Second)
+	assert.NoError(t, err)
+	
+	// Check response
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	
+	// Verify mock was called
+	mockMinIO.AssertExpectations(t)
+}
+
+// TestDuplicateFileUpload tests uploading a file that already exists
+func TestDuplicateFileUpload(t *testing.T) {
+	// Create test app and mocks
+	app := fiber.New()
+	mockMinIO := new(MockMinIOService)
+	cfg := config.New()
+	
+	handler := handlers.New(nil, mockMinIO, nil, nil, nil, cfg, nil, nil)
+	app.Post("/upload", handler.Upload)
+	
+	// Create test file data
+	fileContent := []byte("duplicate audio content")
+	
+	// Setup mock to simulate duplicate detection
+	mockMinIO.On("CalculateFileHash", fileContent).Return("duplicatehash")
+	existingHashes := map[string]bool{"duplicatehash": true}
+	mockMinIO.On("GetExistingHashes").Return(existingHashes, nil)
+	
+	// Don't expect UploadFile to be called since it's a duplicate
+	
+	// Create multipart form data
+	body := new(bytes.Buffer)
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", "duplicate.wav")
+	assert.NoError(t, err)
+	
+	_, err = part.Write(fileContent)
+	assert.NoError(t, err)
+	
+	err = writer.Close()
+	assert.NoError(t, err)
+	
+	// Create request
+	req := httptest.NewRequest("POST", "/upload", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	
+	// Perform request
+	resp, err := app.Test(req, -1)
+	assert.NoError(t, err)
+	
+	// Could return 409 Conflict or 200 with duplicate message
+	// Depends on implementation - adjust based on actual behavior
+	assert.Contains(t, []int{http.StatusOK, http.StatusConflict}, resp.StatusCode)
+}

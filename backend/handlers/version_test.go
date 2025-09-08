@@ -32,7 +32,7 @@ func TestVersionEndpoint(t *testing.T) {
 	}()
 	
 	cfg := config.New()
-	h := New(nil, nil, nil, nil, nil, cfg, nil)
+	h := New(nil, nil, nil, nil, nil, cfg, nil, nil)
 	
 	app := fiber.New()
 	app.Get("/api/version", h.GetVersion)
@@ -72,7 +72,7 @@ func TestVersionEndpoint_HealthCheck_Enhanced(t *testing.T) {
 	config.Version = "1.1.0"
 	
 	cfg := config.New()
-	h := New(nil, nil, nil, nil, nil, cfg, nil)
+	h := New(nil, nil, nil, nil, nil, cfg, nil, nil)
 	
 	app := fiber.New()
 	app.Get("/api/health", h.HealthCheck)
