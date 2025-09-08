@@ -85,7 +85,9 @@ echo -e "${CYAN}▶ Running lint...${NC}"
 if npm run lint > /dev/null 2>&1; then
     echo -e "  ${GREEN}✓ Lint passed${NC}"
 else
-    echo -e "  ${YELLOW}⚠ Lint has warnings (allowed)${NC}"
+    echo -e "  ${RED}✗ Lint failed${NC}"
+    npm run lint
+    FAILED=true
 fi
 
 echo -e "${CYAN}▶ Running tests...${NC}"

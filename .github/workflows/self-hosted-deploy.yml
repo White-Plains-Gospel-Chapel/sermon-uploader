@@ -87,14 +87,14 @@ jobs:
         working-directory: ./frontend-react
         run: |
           echo "Running ESLint..."
-          npm run lint || true
+          npm run lint
           echo "✅ Linting complete!"
 
       - name: 🧪 Run frontend tests
         working-directory: ./frontend-react
         run: |
           echo "Running frontend tests..."
-          npm test -- --coverage --watchAll=false || true
+          npm test
           echo "✅ Frontend tests complete!"
 
       - name: 🏗️ Build frontend
