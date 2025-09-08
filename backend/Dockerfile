@@ -23,9 +23,9 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 # Runtime stage - using Debian slim for better Pi compatibility
 FROM debian:bookworm-slim
 
-# Install minimal runtime dependencies
+# Install minimal runtime dependencies including wget for health checks
 RUN apt-get update && \
-    apt-get install -y ca-certificates && \
+    apt-get install -y ca-certificates wget && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
