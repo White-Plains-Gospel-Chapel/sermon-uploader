@@ -104,21 +104,43 @@ jobs:
         if: ${{ secrets.PI_SSH_KEY != '' }}
         run: |
           ssh pi << 'EOF'
+            set -e
             echo "🚀 Starting deployment on Raspberry Pi..."
+            
+            # Check if project directory exists, create if not
+            if [ ! -d "/opt/sermon-uploader" ]; then
+              echo "📁 Creating project directory..."
+              sudo mkdir -p /opt/sermon-uploader
+              sudo chown $USER:$USER /opt/sermon-uploader
+              cd /opt
+              git clone https://github.com/White-Plains-Gospel-Chapel/sermon-uploader.git
+            fi
+            
             cd /opt/sermon-uploader
             
             echo "📥 Pulling latest code..."
             git pull origin master
             
+            # Check which docker compose command is available
+            if command -v "docker-compose" &> /dev/null; then
+              DOCKER_COMPOSE="docker-compose"
+            elif docker compose version &> /dev/null 2>&1; then
+              DOCKER_COMPOSE="docker compose"
+            else
+              echo "❌ Docker Compose not found. Installing..."
+              sudo apt-get update && sudo apt-get install -y docker-compose-plugin
+              DOCKER_COMPOSE="docker compose"
+            fi
+            
             echo "📦 Pulling Docker images from Docker Hub..."
-            docker compose -f docker-compose.pi5.yml pull
+            $DOCKER_COMPOSE -f docker-compose.pi5.yml pull
             
             echo "🔄 Restarting services..."
-            docker compose -f docker-compose.pi5.yml down
-            docker compose -f docker-compose.pi5.yml up -d
+            $DOCKER_COMPOSE -f docker-compose.pi5.yml down || true
+            $DOCKER_COMPOSE -f docker-compose.pi5.yml up -d
             
             echo "🧹 Cleaning up old images..."
-            docker image prune -f
+            docker image prune -f || true
             
             echo "✅ Deployment complete!"
             docker ps
