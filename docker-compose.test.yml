@@ -3,12 +3,12 @@ version: '3.8'
 services:
   backend:
     image: gaiusr/sermon-uploader-backend:pi5
-    container_name: sermon-uploader-backend
+    container_name: test-sermon-backend
     ports:
-      - "8000:8000"
+      - "8001:8000"  # Different port for testing
     environment:
       - PORT=8000
-      - MINIO_ENDPOINT=host.docker.internal:9000
+      - MINIO_ENDPOINT=host.docker.internal:9000  # Use host.docker.internal for better compatibility
       - MINIO_ACCESS_KEY=gaius
       - MINIO_SECRET_KEY=John 3:16
       - MINIO_BUCKET=sermons
@@ -16,15 +16,15 @@ services:
       - DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/1411012857985892412/dMzxtUtXiOCvFR0w8IuzL8mGYwZqFXuwGucT3CnBNjnXgkVxcWPLk5Vlm9lwh72YWP38
     restart: unless-stopped
     networks:
-      - sermon-network
+      - test-network
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - "host.docker.internal:host-gateway"  # Ensure host.docker.internal works
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8000/api/health"]
       interval: 30s
-      timeout: 30s
-      retries: 5
-      start_period: 60s
+      timeout: 30s  # Increased timeout
+      retries: 5     # More retries
+      start_period: 60s  # Longer start period for MinIO connection
     deploy:
       resources:
         limits:
@@ -34,18 +34,18 @@ services:
 
   frontend:
     image: gaiusr/sermon-uploader-frontend:pi5
-    container_name: sermon-uploader-frontend
+    container_name: test-sermon-frontend
     ports:
-      - "3000:3000"
+      - "3001:3000"  # Different port for testing
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_API_URL=http://localhost:8001  # Point to test backend port
       - NODE_ENV=production
     restart: unless-stopped
     depends_on:
       backend:
         condition: service_healthy
     networks:
-      - sermon-network
+      - test-network
     deploy:
       resources:
         limits:
@@ -54,8 +54,8 @@ services:
           memory: 512M
 
 networks:
-  sermon-network:
+  test-network:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.20.0.0/16
+        - subnet: 172.21.0.0/16  # Different subnet for test
