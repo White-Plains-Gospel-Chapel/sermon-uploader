@@ -16,13 +16,12 @@
       "static/chunks/138-e4f329160cd78995.js",
       "static/chunks/app/layout-4970e16455d57e2f.js"
     ],
-    "/sermons/page": [
+    "/page": [
       "static/chunks/webpack-04c090bf27c652c8.js",
       "static/chunks/fd9d1056-1f4c605cebad2e8d.js",
       "static/chunks/23-1beca18a27a6e802.js",
       "static/chunks/main-app-6e841cc6b31692fb.js",
-      "static/chunks/138-e4f329160cd78995.js",
-      "static/chunks/app/sermons/page-6485c1d456ca5dca.js"
+      "static/chunks/app/page-ffc06cd4473239c6.js"
     ],
     "/sermons/upload/page": [
       "static/chunks/webpack-04c090bf27c652c8.js",
@@ -32,12 +31,13 @@
       "static/chunks/48-322c7d13da173bc3.js",
       "static/chunks/app/sermons/upload/page-0cce48788586aee8.js"
     ],
-    "/page": [
+    "/sermons/page": [
       "static/chunks/webpack-04c090bf27c652c8.js",
       "static/chunks/fd9d1056-1f4c605cebad2e8d.js",
       "static/chunks/23-1beca18a27a6e802.js",
       "static/chunks/main-app-6e841cc6b31692fb.js",
-      "static/chunks/app/page-ffc06cd4473239c6.js"
+      "static/chunks/138-e4f329160cd78995.js",
+      "static/chunks/app/sermons/page-6485c1d456ca5dca.js"
     ]
   }
 }

@@ -233,12 +233,32 @@ jobs:
       - name: 🚀 Start new containers
         run: |
           echo "Starting new containers..."
-          if [ -f docker-compose.pi5.yml ]; then
-            docker compose -f docker-compose.pi5.yml up -d
-            echo "✅ Containers started successfully!"
+          
+          # Check if MinIO port 9000 is already in use
+          if lsof -i :9000 > /dev/null 2>&1; then
+            echo "⚠️ Port 9000 is already in use (existing MinIO installation detected)"
+            echo "Using external MinIO configuration..."
+            if [ -f docker-compose.pi5-external-minio.yml ]; then
+              docker compose -f docker-compose.pi5-external-minio.yml up -d
+              echo "✅ Containers started with external MinIO!"
+            else
+              echo "Creating external MinIO configuration..."
+              # Use the configuration without MinIO service
+              grep -v -A 20 "^  minio:" docker-compose.pi5.yml > docker-compose.pi5-external-minio.yml
+              sed -i 's/MINIO_ENDPOINT=minio:9000/MINIO_ENDPOINT=host.docker.internal:9000/g' docker-compose.pi5-external-minio.yml
+              sed -i '/depends_on:/,/condition:/d' docker-compose.pi5-external-minio.yml
+              docker compose -f docker-compose.pi5-external-minio.yml up -d
+              echo "✅ Containers started with external MinIO!"
+            fi
           else
-            echo "❌ docker-compose.pi5.yml not found!"
-            exit 1
+            echo "Port 9000 is free, using full stack deployment..."
+            if [ -f docker-compose.pi5.yml ]; then
+              docker compose -f docker-compose.pi5.yml up -d
+              echo "✅ Containers started successfully!"
+            else
+              echo "❌ docker-compose.pi5.yml not found!"
+              exit 1
+            fi
           fi
 
       - name: ⏳ Wait for services to be healthy
