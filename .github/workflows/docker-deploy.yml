@@ -96,7 +96,7 @@ jobs:
           chmod 600 ~/.ssh/pi_key
           echo "Host pi" >> ~/.ssh/config
           echo "  HostName 192.168.1.127" >> ~/.ssh/config
-          echo "  User pi" >> ~/.ssh/config
+          echo "  User gaius" >> ~/.ssh/config
           echo "  IdentityFile ~/.ssh/pi_key" >> ~/.ssh/config
           echo "  StrictHostKeyChecking no" >> ~/.ssh/config
 
