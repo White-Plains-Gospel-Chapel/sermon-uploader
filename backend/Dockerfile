@@ -1,5 +1,5 @@
 # Build stage - using official Go image with ARM64 support
-FROM --platform=$BUILDPLATFORM golang:1.21-bookworm AS builder
+FROM --platform=$BUILDPLATFORM golang:1.23-bookworm AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y git ca-certificates && rm -rf /var/lib/apt/lists/*
