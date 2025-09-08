@@ -78,10 +78,26 @@ get_container_using_port() {
 check_existing_minio() {
     local port=$1
     
-    # Check if MinIO health endpoint responds
-    if curl -sf http://localhost:$port/minio/health/live > /dev/null 2>&1; then
-        return 0  # MinIO is running
+    # Check if curl exists before using it
+    if command -v curl > /dev/null 2>&1; then
+        # Check if MinIO health endpoint responds
+        if curl -sf http://localhost:$port/minio/health/live > /dev/null 2>&1; then
+            return 0  # MinIO is running
+        fi
     fi
+    
+    # If port 9000 is in use and we're in CI/CD, assume it's MinIO
+    if [ "$port" = "9000" ] && ([ "$CI" = "true" ] || [ "$GITHUB_ACTIONS" = "true" ]); then
+        echo -e "  ${CYAN}→ Port 9000 in use in CI environment, assuming it's MinIO${NC}"
+        return 0
+    fi
+    
+    # Check if the process name contains "minio"
+    local port_user=$(get_port_user $port)
+    if [[ "$port_user" == *"minio"* ]] || [[ "$port_user" == *"MinIO"* ]]; then
+        return 0  # MinIO process detected
+    fi
+    
     return 1  # Not MinIO or not responding
 }
 
@@ -203,6 +219,16 @@ handle_port_conflict() {
                         echo -e "  ${YELLOW}⚠ Could not kill process (may require sudo)${NC}"
                     fi
                 fi
+            fi
+        fi
+        
+        # Last resort: if it's port 9000 and we can't identify it, check one more time
+        if [ "$port" = "9000" ]; then
+            echo -e "  ${YELLOW}→ Unidentified process on port 9000, checking if it's MinIO...${NC}"
+            # Try a simple TCP check
+            if nc -zv localhost 9000 2>&1 | grep -q succeeded; then
+                echo -e "  ${CYAN}→ Port 9000 is responding, assuming it's MinIO in CI/CD${NC}"
+                return 2  # Treat as external MinIO
             fi
         fi
         

@@ -1,5 +1,5 @@
 # Deployment Information
-# Generated: Mon Sep  8 17:08:49 EDT 2025
+# Generated: Mon Sep  8 17:36:34 EDT 2025
 DEPLOYMENT_TYPE=full-stack
 COMPOSE_FILE=docker-compose.pi5.yml
 FRONTEND_URL=http://localhost:3000
