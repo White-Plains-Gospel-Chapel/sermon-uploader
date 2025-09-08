@@ -82,17 +82,23 @@ type FileMetadata struct {
 	} `json:"ai_analysis"`
 }
 
+// GetClient returns the MinIO client instance
+func (s *MinIOService) GetClient() *minio.Client {
+	return s.client
+}
+
 func NewMinIOService(cfg *config.Config) *MinIOService {
-	// Create optimized HTTP transport for Pi with research-based settings
+	// Create optimized HTTP transport for internet uploads with high bandwidth
 	transport := &http.Transport{
-		MaxIdleConns:          100,              // Increased from cfg.MaxIdleConns for better performance
-		MaxConnsPerHost:       20,               // Increased from cfg.MaxConnsPerHost for concurrent uploads
-		MaxIdleConnsPerHost:   20,               // Critical for performance - added based on research
-		IdleConnTimeout:       90 * time.Second, // Increased from cfg.KeepAlive for better connection reuse
-		ResponseHeaderTimeout: 30 * time.Second, // Added for large file handling
-		TLSHandshakeTimeout:   10 * time.Second, // Added for SSL optimization
-		ExpectContinueTimeout: 10 * time.Second, // Added for multipart optimization
-		DisableCompression:    true,             // Keep for bit-perfect audio
+		MaxIdleConns:          1000,             // Much higher for concurrent uploads
+		MaxConnsPerHost:       100,              // Allow many concurrent parts
+		MaxIdleConnsPerHost:   100,              // Keep many connections ready
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: 60 * time.Second, // Increase for internet latency
+		TLSHandshakeTimeout:   30 * time.Second,
+		ExpectContinueTimeout: 10 * time.Second,
+		DisableCompression:    true, // WAV files don't compress
+		ForceAttemptHTTP2:     false, // HTTP/1.1 often better for large files
 	}
 
 	// Initialize MinIO client with optimized transport
@@ -129,10 +135,6 @@ func (s *MinIOService) TestConnection() error {
 	ctx := context.Background()
 	_, err := s.client.ListBuckets(ctx)
 	return err
-}
-
-func (s *MinIOService) GetClient() *minio.Client {
-	return s.client
 }
 
 func (s *MinIOService) EnsureBucketExists() error {

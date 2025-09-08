@@ -35,6 +35,7 @@ type DiscordLiveService struct {
 	webhookID      string
 	webhookToken   string
 	activeMessages map[string]*LiveMessage
+	currentBatch   *BatchUploadInfo
 	mu             sync.RWMutex
 	client         *http.Client
 }

@@ -1,115 +1,77 @@
 #!/bin/bash
 
-# GitHub Actions Self-Hosted Runner Setup for Raspberry Pi
-# This is the industry-standard way to deploy to private infrastructure
+# GitHub Self-Hosted Runner Setup for Raspberry Pi
+# This script sets up the Pi as a GitHub Actions runner
 
 set -e
 
-echo "🚀 GitHub Actions Self-Hosted Runner Setup"
-echo "=========================================="
-echo ""
-echo "This script will set up your Raspberry Pi as a self-hosted GitHub Actions runner."
-echo "This allows GitHub Actions to deploy directly to your Pi on your private network."
-echo ""
+echo "🔧 Setting up GitHub Actions self-hosted runner on Pi..."
 
-# Configuration
-RUNNER_VERSION="2.319.1"
-RUNNER_ARCH="linux-arm64"  # For Raspberry Pi 4
-REPO_OWNER="White-Plains-Gospel-Chapel"
-REPO_NAME="sermon-uploader"
-RUNNER_NAME="pi-runner-$(hostname)"
-RUNNER_WORK_DIR="/home/gaius/actions-runner/_work"
+# Create runner directory
+sudo mkdir -p /opt/github-runner
+cd /opt/github-runner
 
-echo "📋 Prerequisites:"
-echo "  - GitHub Personal Access Token with 'repo' and 'workflow' permissions"
-echo "  - Run this script ON YOUR RASPBERRY PI"
-echo ""
-read -p "Do you have your GitHub token ready? (y/n): " -n 1 -r
-echo
-if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-    echo "Please create a token at: https://github.com/settings/tokens"
-    echo "Required scopes: repo, workflow"
-    exit 1
-fi
+# Download the latest runner for ARM64
+echo "📥 Downloading GitHub Actions runner..."
+curl -o actions-runner-linux-arm64-2.311.0.tar.gz -L https://github.com/actions/runner/releases/download/v2.311.0/actions-runner-linux-arm64-2.311.0.tar.gz
 
-echo ""
-read -p "Enter your GitHub Personal Access Token: " GITHUB_TOKEN
-echo ""
+# Verify the hash (optional but recommended)
+echo "3d357cf7-6d18-4a6b-83b7-1ca67c1f9fd1  actions-runner-linux-arm64-2.311.0.tar.gz" | shasum -a 256 -c
 
-# Step 1: Download and extract runner
-echo "📦 Step 1: Downloading GitHub Actions runner..."
-cd /home/gaius
-mkdir -p actions-runner && cd actions-runner
+# Extract the installer
+tar xzf actions-runner-linux-arm64-2.311.0.tar.gz
 
-# Download the latest runner package
-curl -o actions-runner-linux-arm64.tar.gz -L \
-  https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${RUNNER_ARCH}-${RUNNER_VERSION}.tar.gz
+# Create a user for the runner
+sudo useradd -m -s /bin/bash github-runner || true
+sudo chown -R github-runner:github-runner /opt/github-runner
 
-echo "📂 Extracting runner..."
-tar xzf ./actions-runner-linux-arm64.tar.gz
-rm actions-runner-linux-arm64.tar.gz
+echo "✅ GitHub Actions runner downloaded and extracted."
+echo ""
+echo "🔑 Next steps:"
+echo "1. Go to: https://github.com/White-Plains-Gospel-Chapel/sermon-uploader/settings/actions/runners"
+echo "2. Click 'New self-hosted runner'"
+echo "3. Select Linux ARM64"
+echo "4. Copy the token from the configuration command"
+echo "5. Run the following commands on your Pi:"
+echo ""
+echo "   sudo su - github-runner"
+echo "   cd /opt/github-runner"
+echo "   ./config.sh --url https://github.com/White-Plains-Gospel-Chapel/sermon-uploader --token YOUR_TOKEN"
+echo "   sudo ./svc.sh install"
+echo "   sudo ./svc.sh start"
+echo ""
+echo "After configuration, create the systemd service file:"
 
-# Step 2: Get registration token
-echo ""
-echo "🔑 Step 2: Getting registration token..."
-REGISTRATION_TOKEN=$(curl -sX POST \
-  -H "Authorization: token ${GITHUB_TOKEN}" \
-  -H "Accept: application/vnd.github.v3+json" \
-  https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/actions/runners/registration-token \
-  | grep '"token"' | cut -d'"' -f4)
+# Create systemd service file
+sudo tee /etc/systemd/system/github-runner.service > /dev/null << 'EOF'
+[Unit]
+Description=GitHub Actions Runner
+After=network.target
 
-if [ -z "$REGISTRATION_TOKEN" ]; then
-    echo "❌ Failed to get registration token. Check your GitHub token permissions."
-    exit 1
-fi
+[Service]
+Type=simple
+User=github-runner
+WorkingDirectory=/opt/github-runner
+ExecStart=/opt/github-runner/runsvc.sh
+Restart=always
+RestartSec=15
+KillMode=process
+KillSignal=SIGTERM
+TimeoutStopSec=5min
 
-echo "✅ Got registration token"
+[Install]
+WantedBy=multi-user.target
+EOF
 
-# Step 3: Configure the runner
-echo ""
-echo "⚙️ Step 3: Configuring runner..."
-./config.sh --url https://github.com/${REPO_OWNER}/${REPO_NAME} \
-  --token ${REGISTRATION_TOKEN} \
-  --name ${RUNNER_NAME} \
-  --work ${RUNNER_WORK_DIR} \
-  --labels "self-hosted,Linux,ARM64,raspberry-pi" \
-  --unattended \
-  --replace
+# Set permissions
+sudo chown -R github-runner:github-runner /opt/github-runner
 
-# Step 4: Install as a service
+echo "📝 Systemd service created: github-runner.service"
 echo ""
-echo "🔧 Step 4: Installing as a service..."
-sudo ./svc.sh install
-sudo ./svc.sh start
-
-# Step 5: Verify runner is running
+echo "🎯 After configuring with your token, enable the service:"
+echo "   sudo systemctl daemon-reload"
+echo "   sudo systemctl enable github-runner"
+echo "   sudo systemctl start github-runner"
 echo ""
-echo "✅ Step 5: Verifying runner status..."
-sudo ./svc.sh status
-
-echo ""
-echo "======================================"
-echo "✅ Self-Hosted Runner Setup Complete!"
-echo "======================================"
-echo ""
-echo "Your Raspberry Pi is now a GitHub Actions runner!"
-echo ""
-echo "🎯 What this means:"
-echo "  - GitHub Actions can now deploy directly to your Pi"
-echo "  - No VPN or port forwarding needed"
-echo "  - Workflows run on YOUR hardware"
-echo "  - Full access to your local network"
-echo ""
-echo "📝 To use this runner in your workflows, add:"
-echo ""
-echo "  jobs:"
-echo "    deploy:"
-echo "      runs-on: self-hosted  # <-- This uses your Pi!"
-echo ""
-echo "🔍 Check runner status at:"
-echo "  https://github.com/${REPO_OWNER}/${REPO_NAME}/settings/actions/runners"
-echo ""
-echo "🛑 To stop/start the runner:"
-echo "  sudo /home/gaius/actions-runner/svc.sh stop"
-echo "  sudo /home/gaius/actions-runner/svc.sh start"
-echo ""
+echo "🔍 Check status with:"
+echo "   sudo systemctl status github-runner"

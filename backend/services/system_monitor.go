@@ -13,7 +13,7 @@ import (
 type SystemResourceMonitor struct {
 	mu                sync.RWMutex
 	logger            *slog.Logger
-	discordService    DiscordLiveInterface
+	discordService    *DiscordLiveService
 	messageID         string
 	interval          time.Duration
 	running           bool
@@ -125,7 +125,7 @@ type SystemLoadMetrics struct {
 }
 
 // NewSystemResourceMonitor creates a new comprehensive system monitor
-func NewSystemResourceMonitor(logger *slog.Logger, discordService DiscordLiveInterface, interval time.Duration) *SystemResourceMonitor {
+func NewSystemResourceMonitor(logger *slog.Logger, discordService *DiscordLiveService, interval time.Duration) *SystemResourceMonitor {
 	ctx, cancel := context.WithCancel(context.Background())
 	
 	return &SystemResourceMonitor{

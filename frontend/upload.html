@@ -1,0 +1,926 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sermon Upload</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            max-width: 800px;
+            width: 100%;
+            padding: 40px;
+        }
+
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 2.5rem;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+        }
+
+        .upload-area {
+            border: 3px dashed #667eea;
+            border-radius: 15px;
+            padding: 60px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: #f8f9ff;
+        }
+
+        .upload-area:hover {
+            border-color: #764ba2;
+            background: #f0f2ff;
+        }
+
+        .upload-area.dragover {
+            border-color: #764ba2;
+            background: #e8ebff;
+            transform: scale(1.02);
+        }
+
+        .upload-icon {
+            font-size: 4rem;
+            margin-bottom: 20px;
+        }
+
+        .upload-text {
+            font-size: 1.25rem;
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .upload-hint {
+            color: #999;
+            font-size: 0.9rem;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        .file-list {
+            margin-top: 30px;
+        }
+
+        .file-item {
+            background: #f5f5f5;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .file-info {
+            display: flex;
+            align-items: center;
+            flex: 1;
+        }
+
+        .file-icon {
+            font-size: 2rem;
+            margin-right: 15px;
+        }
+
+        .file-details {
+            flex: 1;
+        }
+
+        .file-name {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 5px;
+        }
+
+        .file-size {
+            color: #666;
+            font-size: 0.9rem;
+        }
+
+        .file-status {
+            display: flex;
+            align-items: center;
+        }
+
+        .progress-container {
+            width: 200px;
+            margin-right: 15px;
+        }
+
+        .progress-bar {
+            height: 6px;
+            background: #e0e0e0;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            transition: width 0.3s ease;
+        }
+
+        .progress-text {
+            text-align: center;
+            margin-top: 5px;
+            font-size: 0.85rem;
+            color: #666;
+        }
+
+        .status-icon {
+            font-size: 1.5rem;
+        }
+
+        .status-uploading {
+            color: #667eea;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.5;
+            }
+        }
+
+        .status-success {
+            color: #4CAF50;
+        }
+
+        .status-error {
+            color: #f44336;
+        }
+
+        .stats-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 20px;
+            margin-top: 30px;
+            padding-top: 30px;
+            border-top: 1px solid #e0e0e0;
+        }
+
+        .stat-item {
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .stat-label {
+            color: #666;
+            font-size: 0.9rem;
+            margin-top: 5px;
+        }
+
+        .upload-button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            border-radius: 30px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            margin: 30px auto 0;
+            display: block;
+            transition: transform 0.2s ease;
+        }
+
+        .upload-button:hover {
+            transform: scale(1.05);
+        }
+
+        .upload-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎙️ Sermon Upload</h1>
+        <p class="subtitle">Upload your WAV sermon files to the cloud</p>
+        
+        <div class="upload-area" id="uploadArea">
+            <div class="upload-icon">📁</div>
+            <div class="upload-text">Drop your sermon files here</div>
+            <div class="upload-hint">or click to select WAV files</div>
+            <input type="file" id="fileInput" accept=".wav,audio/wav" multiple>
+        </div>
+
+        <div class="file-list" id="fileList"></div>
+
+        <div class="stats-container" id="stats" style="display: none;">
+            <div class="stat-item">
+                <div class="stat-value" id="totalFiles">0</div>
+                <div class="stat-label">Total Files</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value" id="totalSize">0 MB</div>
+                <div class="stat-label">Total Size</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value" id="uploadSpeed">0 MB/s</div>
+                <div class="stat-label">Upload Speed</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value" id="successCount">0</div>
+                <div class="stat-label">Uploaded</div>
+            </div>
+        </div>
+
+        <button class="upload-button" id="uploadButton" style="display: none;">
+            Start Upload
+        </button>
+    </div>
+
+    <script>
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        const fileList = document.getElementById('fileList');
+        const uploadButton = document.getElementById('uploadButton');
+        const stats = document.getElementById('stats');
+        
+        let selectedFiles = [];
+        let uploadStartTime = null;
+        let totalBytesUploaded = 0;
+
+        // Enhanced logging system
+        const Logger = {
+            logs: [],
+            log: function(level, message, data = {}) {
+                const timestamp = new Date().toISOString();
+                const logEntry = { timestamp, level, message, data };
+                this.logs.push(logEntry);
+                
+                // Console output with color coding
+                const colors = {
+                    'DEBUG': 'color: gray',
+                    'INFO': 'color: blue',
+                    'WARN': 'color: orange',
+                    'ERROR': 'color: red',
+                    'SUCCESS': 'color: green'
+                };
+                
+                console.log(
+                    `%c[${timestamp}] [${level}] ${message}`,
+                    colors[level] || 'color: black',
+                    data
+                );
+                
+                // Send logs to backend (optional)
+                if (level === 'ERROR') {
+                    this.sendToBackend(logEntry);
+                }
+            },
+            debug: function(message, data) { this.log('DEBUG', message, data); },
+            info: function(message, data) { this.log('INFO', message, data); },
+            warn: function(message, data) { this.log('WARN', message, data); },
+            error: function(message, data) { this.log('ERROR', message, data); },
+            success: function(message, data) { this.log('SUCCESS', message, data); },
+            
+            sendToBackend: function(logEntry) {
+                // Optional: send critical logs to backend
+                fetch('/api/client-log', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(logEntry)
+                }).catch(err => console.error('Failed to send log to backend:', err));
+            },
+            
+            downloadLogs: function() {
+                const blob = new Blob([JSON.stringify(this.logs, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `upload-logs-${Date.now()}.json`;
+                a.click();
+            }
+        };
+
+        // Log page load
+        Logger.info('Upload page loaded', {
+            userAgent: navigator.userAgent,
+            screen: `${screen.width}x${screen.height}`,
+            url: window.location.href
+        });
+
+        // Format file size
+        function formatSize(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return (bytes / Math.pow(k, i)).toFixed(2) + ' ' + sizes[i];
+        }
+
+        // Handle file selection
+        uploadArea.addEventListener('click', () => {
+            Logger.debug('Upload area clicked');
+            fileInput.click();
+        });
+        
+        fileInput.addEventListener('change', (e) => {
+            Logger.info('Files selected via file picker', { count: e.target.files.length });
+            handleFiles(e.target.files);
+        });
+
+        // Handle drag and drop
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+            Logger.debug('Drag over upload area');
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+            Logger.debug('Drag left upload area');
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            Logger.info('Files dropped', { count: e.dataTransfer.files.length });
+            handleFiles(e.dataTransfer.files);
+        });
+
+        // Handle files
+        function handleFiles(files) {
+            Logger.info('Processing files', { 
+                total: files.length,
+                files: Array.from(files).map(f => ({
+                    name: f.name,
+                    size: f.size,
+                    type: f.type
+                }))
+            });
+
+            selectedFiles = Array.from(files).filter(file => {
+                const isWav = file.type === 'audio/wav' || file.type === 'audio/x-wav' || 
+                              file.type === '' || file.name.endsWith('.wav');
+                if (!isWav) {
+                    Logger.warn('Non-WAV file filtered out', { name: file.name, type: file.type });
+                }
+                return isWav;
+            });
+
+            Logger.info('Files after filtering', { count: selectedFiles.length });
+
+            if (selectedFiles.length === 0) {
+                Logger.warn('No valid WAV files selected');
+                alert('Please select WAV files only');
+                return;
+            }
+
+            displayFiles();
+            uploadButton.style.display = 'block';
+            uploadButton.disabled = true;
+            uploadButton.textContent = 'Checking for duplicates...';
+            stats.style.display = 'grid';
+            updateStats();
+            
+            // Process files for duplicates (non-blocking)
+            processFilesForDuplicates();
+            
+            Logger.success('Files ready for processing', { 
+                total: selectedFiles.length
+            });
+        }
+
+        // Display selected files
+        function displayFiles() {
+            fileList.innerHTML = '';
+            
+            selectedFiles.forEach((file, index) => {
+                const fileItem = document.createElement('div');
+                fileItem.className = 'file-item';
+                fileItem.id = `file-${index}`;
+                
+                fileItem.innerHTML = `
+                    <div class="file-info">
+                        <div class="file-icon">🎵</div>
+                        <div class="file-details">
+                            <div class="file-name">${file.name}</div>
+                            <div class="file-size">${formatSize(file.size)}</div>
+                        </div>
+                    </div>
+                    <div class="file-status">
+                        <div class="progress-container" style="display: none;">
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: 0%"></div>
+                            </div>
+                            <div class="progress-text">0%</div>
+                        </div>
+                        <div class="status-icon">⏳</div>
+                    </div>
+                `;
+                
+                fileList.appendChild(fileItem);
+            });
+        }
+
+        // Update statistics
+        function updateStats() {
+            const totalSize = selectedFiles.reduce((sum, file) => sum + file.size, 0);
+            document.getElementById('totalFiles').textContent = selectedFiles.length;
+            document.getElementById('totalSize').textContent = formatSize(totalSize);
+        }
+
+        // Upload files
+        uploadButton.addEventListener('click', async () => {
+            // Filter out duplicates
+            const filesToUpload = selectedFiles.filter(f => !f.isDuplicate);
+            if (filesToUpload.length === 0) {
+                alert('All selected files are duplicates!');
+                return;
+            }
+            
+            Logger.info('Upload started', { 
+                fileCount: filesToUpload.length,
+                duplicatesSkipped: selectedFiles.filter(f => f.isDuplicate).length,
+                totalSize: filesToUpload.reduce((sum, f) => sum + f.size, 0)
+            });
+            
+            uploadButton.disabled = true;
+            uploadButton.textContent = 'Uploading...';
+            uploadStartTime = Date.now();
+            
+            for (let i = 0; i < selectedFiles.length; i++) {
+                // Skip duplicates during upload
+                if (selectedFiles[i].isDuplicate) {
+                    Logger.info(`Skipping duplicate during batch: ${selectedFiles[i].name}`);
+                    continue;
+                }
+                Logger.info(`Starting upload ${i + 1}/${selectedFiles.length}`, {
+                    filename: selectedFiles[i].name,
+                    size: selectedFiles[i].size
+                });
+                await uploadFile(selectedFiles[i], i);
+            }
+            
+            const totalTime = (Date.now() - uploadStartTime) / 1000;
+            Logger.success('All uploads complete', { 
+                totalTime: `${totalTime.toFixed(2)}s`,
+                filesUploaded: selectedFiles.length
+            });
+            uploadButton.textContent = 'Upload Complete';
+        });
+
+        // Upload single file
+        // Calculate SHA-256 hash of file
+        async function calculateFileHash(file) {
+            const buffer = await file.arrayBuffer();
+            const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+            return hashHex;
+        }
+        
+        // Check if file is duplicate
+        async function checkDuplicate(hash) {
+            try {
+                const response = await fetch(`/api/check-hash/${hash}`);
+                const data = await response.json();
+                return data.exists ? data.filename : null;
+            } catch (error) {
+                Logger.warn('Could not check for duplicate', { error: error.message });
+                return null;
+            }
+        }
+        
+        // Hybrid duplicate check: instant (name+size) then accurate (SHA-256)
+        async function processFilesForDuplicates() {
+            const processingDiv = document.createElement('div');
+            processingDiv.style.cssText = 'text-align: center; padding: 20px; color: #666;';
+            processingDiv.innerHTML = '<div>🔍 Quick duplicate check...</div>';
+            fileList.insertBefore(processingDiv, fileList.firstChild);
+            
+            // Prepare file info for instant check
+            const fileInfos = selectedFiles.map(f => ({
+                name: f.name,
+                size: f.size
+            }));
+            
+            try {
+                // Single API call to check all files instantly!
+                const response = await fetch('/api/check-files', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(fileInfos)
+                });
+                
+                const result = await response.json();
+                
+                // Process results
+                result.files.forEach((fileResult, i) => {
+                    const file = selectedFiles[i];
+                    const fileItem = document.getElementById(`file-${i}`);
+                    const statusIcon = fileItem.querySelector('.status-icon');
+                    
+                    if (fileResult.exists) {
+                        file.isDuplicate = true;
+                        file.duplicateOf = fileResult.path || fileResult.name;
+                        
+                        // Mark as duplicate in UI
+                        statusIcon.className = 'status-icon status-error';
+                        statusIcon.textContent = '⚠️';
+                        fileItem.style.opacity = '0.6';
+                        
+                        const fileDetails = fileItem.querySelector('.file-details');
+                        const duplicateMsg = document.createElement('div');
+                        duplicateMsg.style.cssText = 'color: #ff9800; font-size: 0.85em; margin-top: 5px;';
+                        duplicateMsg.textContent = `Possible duplicate (verifying...)`;
+                        duplicateMsg.id = `dup-msg-${i}`;
+                        fileDetails.appendChild(duplicateMsg);
+                        
+                        // Mark as possible duplicate (will verify with hash)
+                        file.possibleDuplicate = true;
+                        Logger.warn(`Possible duplicate: ${file.name}`, { method: 'name+size' });
+                    } else {
+                        file.isDuplicate = false;
+                        statusIcon.className = 'status-icon status-ready';
+                        statusIcon.textContent = '✅';
+                    }
+                });
+                
+                Logger.info('Instant duplicate check complete', {
+                    total: result.total,
+                    duplicates: result.duplicates,
+                    timeMs: 'instant'
+                });
+                
+            } catch (error) {
+                Logger.error('Failed to check duplicates', { error: error.message });
+                // On error, assume all files are OK
+                selectedFiles.forEach((file, i) => {
+                    const fileItem = document.getElementById(`file-${i}`);
+                    const statusIcon = fileItem.querySelector('.status-icon');
+                    file.isDuplicate = false;
+                    statusIcon.className = 'status-icon status-ready';
+                    statusIcon.textContent = '✅';
+                });
+            }
+            
+            // Remove processing message
+            processingDiv.remove();
+            
+            // Enable upload button immediately for clear files
+            const clearFiles = selectedFiles.filter(f => !f.isDuplicate && !f.possibleDuplicate);
+            const possibleDuplicates = selectedFiles.filter(f => f.possibleDuplicate);
+            
+            if (clearFiles.length > 0) {
+                // Enable upload for clear files immediately
+                uploadButton.disabled = false;
+                if (possibleDuplicates.length > 0) {
+                    uploadButton.textContent = `Upload ${clearFiles.length} files (${possibleDuplicates.length} being verified...)`;
+                } else {
+                    uploadButton.textContent = `Upload ${clearFiles.length} files`;
+                }
+            }
+            
+            // Start background hash verification for possible duplicates
+            if (possibleDuplicates.length > 0) {
+                // Don't block - run verification in background
+                verifyPossibleDuplicatesInBackground(possibleDuplicates);
+            }
+        }
+        
+        // Background verification function (non-blocking)
+        async function verifyPossibleDuplicatesInBackground(possibleDuplicates) {
+            const verifyDiv = document.createElement('div');
+            verifyDiv.style.cssText = 'text-align: center; padding: 10px; background: #fef3c7; color: #92400e; border-radius: 8px; margin-bottom: 10px;';
+            verifyDiv.innerHTML = '🔐 Verifying ' + possibleDuplicates.length + ' possible duplicates in background...';
+            fileList.insertBefore(verifyDiv, fileList.firstChild);
+            
+            let verified = 0;
+            for (const file of possibleDuplicates) {
+                const index = selectedFiles.indexOf(file);
+                const fileItem = document.getElementById(`file-${index}`);
+                const statusIcon = fileItem.querySelector('.status-icon');
+                const dupMsg = document.getElementById(`dup-msg-${index}`);
+                
+                try {
+                    // Calculate real SHA-256 hash
+                    const hash = await calculateFileHash(file);
+                    file.hash = hash;
+                    
+                    // Check against server
+                    const duplicateFile = await checkDuplicate(hash);
+                    if (duplicateFile) {
+                        // Confirmed duplicate
+                        file.isDuplicate = true;
+                        file.duplicateOf = duplicateFile;
+                        statusIcon.textContent = '🚫';
+                        dupMsg.textContent = `Confirmed duplicate of: ${duplicateFile}`;
+                        dupMsg.style.color = '#ef4444';
+                        Logger.info(`Duplicate confirmed: ${file.name}`, { hash: hash.substring(0,8) });
+                    } else {
+                        // False positive - not actually a duplicate
+                        file.isDuplicate = false;
+                        file.possibleDuplicate = false;
+                        statusIcon.className = 'status-icon status-ready';
+                        statusIcon.textContent = '✅';
+                        fileItem.style.opacity = '1';
+                        dupMsg.textContent = 'Not a duplicate - ready to upload';
+                        dupMsg.style.color = '#10b981';
+                        Logger.info(`False positive cleared: ${file.name}`);
+                    }
+                } catch (error) {
+                    Logger.error(`Hash verification failed for ${file.name}`, { error: error.message });
+                    // On error, allow upload (server will check)
+                    file.isDuplicate = false;
+                    file.possibleDuplicate = false;
+                    dupMsg.textContent = 'Verification failed - will check during upload';
+                    dupMsg.style.color = '#666';
+                }
+                
+                verified++;
+                verifyDiv.innerHTML = '🔐 Verified ' + verified + ' of ' + possibleDuplicates.length + ' possible duplicates...';
+                
+                // Update upload button dynamically
+                updateUploadButton();
+            }
+            
+            // Remove verification message
+            verifyDiv.remove();
+            
+            // Show final status
+            const confirmedDuplicates = possibleDuplicates.filter(f => f.isDuplicate).length;
+            if (confirmedDuplicates > 0) {
+                const statusDiv = document.createElement('div');
+                statusDiv.style.cssText = 'text-align: center; padding: 10px; background: #fee2e2; color: #991b1b; border-radius: 8px; margin-bottom: 10px;';
+                statusDiv.innerHTML = '✅ Verification complete: ' + confirmedDuplicates + ' duplicates confirmed';
+                fileList.insertBefore(statusDiv, fileList.firstChild);
+                setTimeout(() => statusDiv.remove(), 3000);
+            }
+        }
+        
+        // Helper function to update upload button text
+        function updateUploadButton() {
+            const validFiles = selectedFiles.filter(f => !f.isDuplicate).length;
+            const pendingVerification = selectedFiles.filter(f => f.possibleDuplicate && !f.isDuplicate).length;
+            
+            if (validFiles === 0) {
+                uploadButton.textContent = 'All files are duplicates';
+                uploadButton.disabled = true;
+            } else if (pendingVerification > 0) {
+                const confirmed = selectedFiles.filter(f => f.isDuplicate).length;
+                uploadButton.textContent = `Upload ${validFiles} files (${confirmed} duplicates will be skipped)`;
+                uploadButton.disabled = false;
+            } else {
+                const duplicates = selectedFiles.filter(f => f.isDuplicate).length;
+                if (duplicates > 0) {
+                    uploadButton.textContent = `Upload ${validFiles} files (${duplicates} duplicates skipped)`;
+                } else {
+                    uploadButton.textContent = `Upload ${validFiles} files`;
+                }
+                uploadButton.disabled = false;
+            }
+        }
+
+        async function uploadFile(file, index) {
+            const uploadStartTime = Date.now();
+            Logger.info(`Upload starting for: ${file.name}`, { 
+                index, 
+                size: file.size,
+                type: file.type 
+            });
+
+            const fileItem = document.getElementById(`file-${index}`);
+            const progressContainer = fileItem.querySelector('.progress-container');
+            const progressFill = fileItem.querySelector('.progress-fill');
+            const progressText = fileItem.querySelector('.progress-text');
+            const statusIcon = fileItem.querySelector('.status-icon');
+            
+            // Calculate hash and check for duplicate BEFORE uploading
+            progressContainer.style.display = 'block';
+            statusIcon.className = 'status-icon status-uploading';
+            
+            // Skip duplicate files
+            if (file.isDuplicate) {
+                Logger.info(`Skipping duplicate: ${file.name}`);
+                statusIcon.className = 'status-icon status-error';
+                statusIcon.textContent = '⚠️';
+                progressText.textContent = 'Duplicate - Skipped';
+                errors++;
+                updateStats();
+                return { success: false, error: 'Duplicate file' };
+            }
+            
+            // Start upload
+            statusIcon.textContent = '⚡';
+            progressText.textContent = '0%';
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            Logger.debug('FormData created', { filename: file.name });
+            
+            try {
+                const xhr = new XMLHttpRequest();
+                
+                // Track upload progress (0-95%)
+                let serverProcessingInterval = null;
+                let currentDisplayPercent = 0;
+                
+                xhr.upload.addEventListener('progress', (e) => {
+                    if (e.lengthComputable) {
+                        const actualPercent = (e.loaded / e.total) * 100;
+                        // Reserve 5% for server processing (0-95% for upload)
+                        currentDisplayPercent = Math.min(95, actualPercent * 0.95);
+                        progressFill.style.width = currentDisplayPercent + '%';
+                        progressText.textContent = Math.round(currentDisplayPercent) + '%';
+                        
+                        // When upload completes, start simulating server processing
+                        if (actualPercent >= 100 && !serverProcessingInterval) {
+                            statusIcon.textContent = '⚙️';
+                            // Animate from 95% to 99% over expected server time
+                            const startPercent = currentDisplayPercent;
+                            const startTime = Date.now();
+                            const expectedServerTime = 2000; // 2 seconds estimated
+                            
+                            serverProcessingInterval = setInterval(() => {
+                                const elapsed = Date.now() - startTime;
+                                const progress = Math.min(1, elapsed / expectedServerTime);
+                                currentDisplayPercent = startPercent + (99 - startPercent) * progress;
+                                progressFill.style.width = currentDisplayPercent + '%';
+                                progressText.textContent = Math.round(currentDisplayPercent) + '%';
+                                
+                                if (currentDisplayPercent >= 99) {
+                                    clearInterval(serverProcessingInterval);
+                                }
+                            }, 50);
+                        }
+                        
+                        // Update speed - use current file's loaded bytes and elapsed time
+                        const elapsed = (Date.now() - uploadStartTime) / 1000;
+                        const speed = elapsed > 0 ? e.loaded / elapsed : 0;
+                        
+                        // Update global speed display with real-time speed
+                        document.getElementById('uploadSpeed').textContent = formatSize(speed) + '/s';
+                        
+                        Logger.debug(`Upload progress: ${file.name}`, {
+                            loaded: e.loaded,
+                            total: e.total,
+                            percent: Math.round(actualPercent)
+                        });
+                    }
+                });
+                
+                // Handle completion
+                await new Promise((resolve, reject) => {
+                    xhr.onload = () => {
+                        const responseTime = Date.now() - uploadStartTime;
+                        Logger.info(`Upload response received: ${file.name}`, {
+                            status: xhr.status,
+                            responseTime: `${responseTime}ms`,
+                            response: xhr.responseText
+                        });
+
+                        if (xhr.status === 200) {
+                            // Clear processing animation
+                            if (serverProcessingInterval) {
+                                clearInterval(serverProcessingInterval);
+                            }
+                            
+                            totalBytesUploaded += file.size;
+                            
+                            // Smoothly complete to 100%
+                            progressFill.style.transition = 'width 0.3s ease';
+                            progressFill.style.width = '100%';
+                            progressText.textContent = '100%';
+                            
+                            // Mark as complete after reaching 100%
+                            setTimeout(() => {
+                                statusIcon.className = 'status-icon status-success';
+                                statusIcon.textContent = '✅';
+                                progressText.textContent = 'Complete';
+                                progressFill.style.backgroundColor = '#10b981';
+                            }, 300);
+                            
+                            const successCount = parseInt(document.getElementById('successCount').textContent);
+                            document.getElementById('successCount').textContent = successCount + 1;
+                            
+                            Logger.success(`Upload successful: ${file.name}`, {
+                                size: file.size,
+                                time: `${responseTime}ms`,
+                                speed: `${(file.size / (responseTime / 1000) / 1024 / 1024).toFixed(2)} MB/s`
+                            });
+                            
+                            resolve();
+                        } else {
+                            Logger.error(`Upload failed: ${file.name}`, {
+                                status: xhr.status,
+                                statusText: xhr.statusText,
+                                response: xhr.responseText
+                            });
+                            reject(new Error(`Upload failed with status ${xhr.status}`));
+                        }
+                    };
+                    
+                    xhr.onerror = () => {
+                        Logger.error(`Network error uploading: ${file.name}`, {
+                            readyState: xhr.readyState,
+                            status: xhr.status
+                        });
+                        reject(new Error('Network error'));
+                    };
+                    
+                    xhr.onreadystatechange = () => {
+                        Logger.debug(`XHR state change: ${file.name}`, {
+                            readyState: xhr.readyState,
+                            status: xhr.status
+                        });
+                    };
+                    
+                    // Use direct upload domain for large files
+                    const uploadUrl = window.location.hostname === 'localhost' 
+                        ? '/api/upload'
+                        : 'https://uploads.wpgc.church/api/upload';
+                    
+                    Logger.info(`Sending upload request: ${file.name}`, { url: uploadUrl });
+                    
+                    xhr.open('POST', uploadUrl);
+                    // Important: Include credentials for CORS
+                    xhr.withCredentials = false; // Set to true if using auth
+                    xhr.send(formData);
+                });
+                
+            } catch (error) {
+                Logger.error(`Upload error: ${file.name}`, {
+                    error: error.message,
+                    stack: error.stack
+                });
+                statusIcon.className = 'status-icon status-error';
+                statusIcon.textContent = '❌';
+                progressText.textContent = 'Failed';
+            }
+        }
+
+        // Add keyboard shortcut to download logs
+        document.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && e.shiftKey && e.key === 'L') {
+                Logger.info('Downloading logs via keyboard shortcut');
+                Logger.downloadLogs();
+            }
+        });
+
+        // Log any unhandled errors
+        window.addEventListener('error', (e) => {
+            Logger.error('Unhandled error', {
+                message: e.message,
+                filename: e.filename,
+                line: e.lineno,
+                column: e.colno,
+                stack: e.error?.stack
+            });
+        });
+
+        Logger.info('Upload page initialization complete');
+    </script>
+</body>
+</html>

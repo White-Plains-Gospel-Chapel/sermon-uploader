@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
+	"os/signal"
 	"runtime"
 	"runtime/debug"
+	"syscall"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -79,6 +82,18 @@ func main() {
 	discordService := services.NewDiscordService(cfg.DiscordWebhookURL)
 	wsHub := services.NewWebSocketHub()
 	fileService := services.NewFileService(minioService, discordService, wsHub, cfg)
+	
+	// Initialize hash cache for ultra-fast duplicate detection
+	hashCache := services.NewHashCache(minioService.GetClient(), "sermons")
+	
+	// Initialize Pi optimizations
+	piOptimizer := optimization.NewPiOptimizer()
+	
+	// Initialize circuit breakers for resilience
+	circuitBreakers := services.NewCircuitBreakerManager()
+	
+	// Initialize rate limiters for resource protection
+	rateLimiter := services.NewRateLimiter()
 
 	// Register health checks
 	healthChecker.RegisterCheck("minio", func() error {
@@ -96,10 +111,16 @@ func main() {
 		log.Printf("[%s] ✅ MinIO connection successful", timestamp)
 	}
 
-	// Create Fiber app
+	// Create Fiber app with optimized settings for large file uploads
 	app := fiber.New(fiber.Config{
-		BodyLimit: 10 * 1024 * 1024 * 1024, // 10GB limit for batch uploads of large WAV files
-		StreamRequestBody: true, // Enable streaming for large uploads
+		BodyLimit:         10 * 1024 * 1024 * 1024, // 10GB limit
+		StreamRequestBody: true,                     // Enable streaming
+		ReadBufferSize:    16 * 1024 * 1024,        // 16MB read buffer (was 4KB)
+		WriteBufferSize:   16 * 1024 * 1024,        // 16MB write buffer (was 4KB)
+		ReadTimeout:       300 * time.Second,        // 5 min read timeout
+		WriteTimeout:      300 * time.Second,        // 5 min write timeout
+		IdleTimeout:       120 * time.Second,
+		DisableKeepalive:  false,
 		ErrorHandler: func(ctx *fiber.Ctx, err error) error {
 			code := fiber.StatusInternalServerError
 			if e, ok := err.(*fiber.Error); ok {
@@ -113,17 +134,35 @@ func main() {
 	})
 
 	// Middleware
-	// CORS configuration that allows both CloudFlare domain and direct IP access
+	// CORS configuration for multi-domain setup
 	app.Use(cors.New(cors.Config{
 		AllowOriginsFunc: func(origin string) bool {
-			// Allow all origins for now to bypass CloudFlare
-			// In production, you might want to restrict this to specific domains
-			return true
+			allowedOrigins := []string{
+				"https://wpgc.church",              // Public website
+				"https://www.wpgc.church",          // Public website with www
+				"https://admin.wpgc.church",        // Admin dashboard
+				"https://api.wpgc.church",          // API domain (if needed)
+				"http://localhost:3000",            // Local admin dashboard
+				"http://localhost:3001",            // Local public website
+				"http://localhost:8000",            // Local API backend
+			
+			for _, allowed := range allowedOrigins {
+				if origin == allowed {
+					return true
+				}
+			}
+			
+			// Log rejected origins for debugging
+			if origin != "" {
+				log.Printf("CORS rejected origin: %s", origin)
+			}
+			return false
 		},
 		AllowMethods:     "GET,POST,PUT,DELETE,OPTIONS,HEAD,PATCH",
 		AllowHeaders:     "Origin,Content-Type,Accept,Authorization,Upload-Length,Upload-Offset,Upload-Metadata,Tus-Resumable,Upload-Checksum,X-Chunk-Index,X-Total-Chunks",
 		ExposeHeaders:    "Upload-Offset,Upload-Length,Tus-Resumable,Tus-Version,Tus-Max-Size,Tus-Extension,Tus-Checksum-Algorithm,Location",
-		AllowCredentials: false, // Set to false to allow wildcard origins
+		AllowCredentials: false,
+		MaxAge:          86400, // Cache preflight for 24 hours
 	}))
 
 	// Configure logger with Eastern Time
@@ -160,101 +199,122 @@ func main() {
 		app.Use(pprof.New())
 	}
 
-	// Initialize handlers with production logger
-	h := handlers.New(fileService, minioService, discordService, discordLiveService, wsHub, cfg, productionLogger)
+	// Initialize handlers with all optimizations
+	h := handlers.New(fileService, minioService, discordService, discordLiveService, wsHub, cfg, productionLogger, hashCache)
+	
+	// Store optimizations for use in handlers
+	_ = piOptimizer // Will be used in handlers
+	_ = circuitBreakers // Will be used for MinIO calls
+	_ = rateLimiter // Will be used in middleware
 
-	// Routes
+	// API Routes - Organized by domain/purpose
 	api := app.Group("/api")
 	{
+		// ============================================
+		// Core Health & Status (All domains)
+		// ============================================
 		api.Get("/health", h.HealthCheck)
 		api.Get("/version", h.GetVersion)
 		api.Get("/status", h.GetStatus)
-		api.Get("/dashboard", h.GetDashboard)
-		api.Post("/upload", h.UploadFiles)
-		api.Get("/files", h.ListFiles)
-
-		// Direct upload routes (better for large files)
-		api.Post("/upload/presigned", h.GetPresignedURL)
-		api.Post("/upload/presigned-batch", h.GetPresignedURLsBatch)
-		api.Post("/upload/complete", h.ProcessUploadedFile)
-		api.Post("/check-duplicate", h.CheckDuplicate)
 		
-		// Proxy upload routes (to bypass browser Private Network Access restrictions)
-		api.Post("/upload/proxy", h.ProxyUpload)
-		api.Put("/upload/proxy", h.ProxyUpload)
-		api.Post("/upload/proxy-url", h.GetProxyUploadURL)
-		api.Put("/upload/stream", h.StreamProxyUpload)
-
-		// Direct MinIO upload routes (peer-to-peer, no CloudFlare)
-		api.Post("/upload/direct-minio", h.GetDirectMinIOUploadURL)
-		api.Post("/upload/direct-minio-batch", h.GetDirectMinIOUploadURLBatch)
-
-		// Streaming proxy upload routes (eliminates CORS issues)
-		api.Post("/upload/streaming-proxy-url", h.GetStreamingUploadURL)
-		api.Post("/upload/streaming-proxy-url-batch", h.GetStreamingUploadURLBatch)
-		api.Put("/upload/streaming-proxy", h.StreamingUploadProxy)
-
-		// Zero-memory streaming proxy (handles bulk uploads without freezing)
-		api.Post("/upload/zero-memory-url", h.GetZeroMemoryUploadURL)
-		api.Post("/upload/zero-memory-url-batch", h.GetZeroMemoryUploadURLBatch)
-		api.Put("/upload/zero-memory-proxy", h.ZeroMemoryStreamingProxy)
-
-		// Streaming upload routes with bit-perfect quality
-		api.Post("/upload/streaming", h.UploadStreamingFiles)
-
-		// TUS protocol routes for resumable uploads
-		tus := api.Group("/tus")
+		// ============================================
+		// Public API (wpgc.church)
+		// ============================================
+		public := api.Group("/public")
 		{
-			tus.Options("", h.GetTUSConfiguration)         // TUS discovery
-			tus.Post("", h.CreateTUSUpload)                // Create upload
-			tus.Head("/:id", h.GetTUSUploadInfo)           // Get upload info
-			tus.Patch("/:id", h.UploadTUSChunk)            // Upload chunk
-			tus.Post("/:id/complete", h.CompleteTUSUpload) // Complete upload
-			tus.Delete("/:id", h.DeleteTUSUpload)          // Delete upload
+			public.Get("/sermons", h.ListPublicSermons)        // Public sermon list
+			public.Get("/sermons/:id", h.GetSermon)            // Single sermon details
+			public.Get("/sermons/latest", h.GetLatestSermons)  // Latest sermons
+			public.Get("/events", h.GetPublicEvents)           // Public events
+			public.Get("/announcements", h.GetAnnouncements)   // Church announcements
 		}
-
-		// Statistics and monitoring endpoints
-		api.Get("/stats/streaming", h.GetStreamingStats)
-		api.Get("/stats/compression", h.GetCompressionStats)
-		api.Post("/files/:filename/verify", h.VerifyFileIntegrity)
-
-		// Performance monitoring endpoints
-		api.Get("/metrics", func(c *fiber.Ctx) error {
-			// metrics := metricsCollector.GetMetrics()  // Temporarily disabled
-			metrics := map[string]interface{}{"disabled": "monitoring temporarily disabled"}
-			return c.JSON(metrics)
-		})
-		api.Get("/health/detailed", func(c *fiber.Ctx) error {
-			// health := healthChecker.CheckHealth()  // Temporarily disabled
-			health := map[string]interface{}{"status": "ok", "disabled": "monitoring temporarily disabled"}
-			return c.JSON(health)
-		})
-		api.Get("/stats/pools", func(c *fiber.Ctx) error {
-			// pools := optimization.GetGlobalPools()  // Temporarily disabled
-			// stats := pools.GetAllStats()  // Temporarily disabled
-			stats := map[string]interface{}{"disabled": "optimization temporarily disabled"}
-			return c.JSON(stats)
-		})
-
-		// Keep existing upload methods - chunking handled on frontend
-		// Chunked uploads use the same presigned URL system
-
-		// Test endpoints
-		api.Post("/test/discord", h.TestDiscord)
-		api.Get("/test/minio", h.TestMinIO)
-		api.Post("/test/github/webhook", h.TestGitHubWebhook)
-
-		// GitHub webhook endpoint
-		api.Post("/github/webhook", h.GitHubWebhook)
-
-		// Migration endpoint
-		api.Post("/migrate/minio", h.MigrateMinIO)
-
-		// Cleanup and maintenance
-		api.Post("/cleanup/expired", h.CleanupExpiredUploads)
-
-		// Dangerous operations (require confirmation)
-		api.Delete("/bucket/clear", h.ClearBucket)
+		
+		// ============================================
+		// Admin API (admin.wpgc.church)
+		// ============================================
+		admin := api.Group("/admin")
+		{
+			// Sermon Management
+			admin.Get("/sermons", h.ListFiles)                 // All sermons with admin info
+			admin.Get("/sermons/:id", h.GetSermonAdmin)        // Detailed sermon info
+			admin.Put("/sermons/:id", h.UpdateSermon)          // Update sermon metadata
+			admin.Delete("/sermons/:id", h.DeleteSermon)       // Delete sermon
+			
+			// Member Management
+			admin.Get("/members", h.ListMembers)
+			admin.Post("/members", h.CreateMember)
+			admin.Put("/members/:id", h.UpdateMember)
+			admin.Delete("/members/:id", h.DeleteMember)
+			
+			// Event Management
+			admin.Get("/events", h.ListEvents)
+			admin.Post("/events", h.CreateEvent)
+			admin.Put("/events/:id", h.UpdateEvent)
+			admin.Delete("/events/:id", h.DeleteEvent)
+			
+			// Media Management
+			admin.Get("/media", h.ListMedia)
+			admin.Post("/media/upload", h.UploadMedia)
+			admin.Delete("/media/:id", h.DeleteMedia)
+			
+			// Dashboard Stats
+			admin.Get("/stats", h.GetDashboardStats)
+			admin.Get("/stats/uploads", h.GetUploadStats)
+			admin.Get("/stats/usage", h.GetUsageStats)
+		}
+		
+		// ============================================
+		// Upload API (uploads.wpgc.church)
+		// ============================================
+		uploads := api.Group("/uploads")
+		{
+			// Duplicate detection
+			uploads.Get("/check-hash/:hash", h.CheckHash)
+			uploads.Get("/hash-stats", h.GetHashStats)
+			uploads.Post("/check-files", h.CheckFilesByInfo)
+			
+			// Upload operations
+			uploads.Post("/sermon", h.Upload)                  // Single sermon upload
+			uploads.Post("/sermons/batch", h.UploadBatch)      // Batch sermon upload
+			uploads.Post("/media", h.UploadMedia)              // Media file upload
+			
+			// Upload management
+			uploads.Get("/status/:uploadId", h.GetUploadStatus)
+			uploads.Delete("/cancel/:uploadId", h.CancelUpload)
+		}
+		
+		// ============================================
+		// Maintenance & Testing (Admin only)
+		// ============================================
+		maintenance := api.Group("/maintenance")
+		{
+			maintenance.Get("/metrics", func(c *fiber.Ctx) error {
+				metrics := map[string]interface{}{"disabled": "monitoring temporarily disabled"}
+				return c.JSON(metrics)
+			})
+			maintenance.Get("/health/detailed", func(c *fiber.Ctx) error {
+				health := map[string]interface{}{"status": "ok", "disabled": "monitoring temporarily disabled"}
+				return c.JSON(health)
+			})
+			maintenance.Post("/cleanup/expired", h.CleanupExpiredUploads)
+			maintenance.Delete("/bucket/clear", h.ClearBucket)
+			maintenance.Post("/migrate/minio", h.MigrateMinIO)
+		}
+		
+		// ============================================
+		// Webhook endpoints
+		// ============================================
+		webhooks := api.Group("/webhooks")
+		{
+			webhooks.Post("/github", h.GitHubWebhook)
+			webhooks.Post("/discord", h.TestDiscord)
+		}
+		
+		// ============================================
+		// Legacy routes (for backward compatibility)
+		// ============================================
+		api.Post("/upload", h.Upload)         // Redirect to /api/uploads/sermon
+		api.Get("/files", h.ListFiles)        // Redirect to /api/admin/sermons
 	}
 
 	// WebSocket endpoint
@@ -270,11 +330,19 @@ func main() {
 		wsHub.HandleConnection(c)
 	}))
 
-	// Serve static files (React build)
-	app.Static("/", "./frontend/out")
-	app.Get("/*", func(c *fiber.Ctx) error {
-		return c.SendFile("./frontend/out/index.html")
+	// Serve the HTML upload page as the main interface
+	// Use different paths for development vs production
+	frontendPath := "../frontend"
+	if os.Getenv("ENV") == "production" {
+		frontendPath = "./frontend"
+	}
+	
+	app.Static("/", frontendPath, fiber.Static{
+		Index: "upload.html",
 	})
+	
+	// Serve other static files if needed
+	app.Static("/assets", frontendPath+"/assets")
 
 	// Send startup notification using live update system
 	go func() {
@@ -289,7 +357,7 @@ func main() {
 		}
 	}()
 
-	// Start server
+	// Start server with graceful shutdown
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8000"
@@ -300,6 +368,27 @@ func main() {
 	timestamp := easternTime.Format("2006/01/02 15:04:05 MST")
 	log.Printf("[%s] 🚀 Server starting on port %s", timestamp, port)
 	log.Printf("[%s] 🌐 Access at http://your-pi-ip:%s", timestamp, port)
+	
+	// Graceful shutdown handling
+	go func() {
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+		<-sigChan
+		
+		log.Println("🛑 Shutting down gracefully...")
+		
+		// Give ongoing requests 30 seconds to complete
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		
+		// Shutdown app
+		if err := app.ShutdownWithContext(ctx); err != nil {
+			log.Printf("Error during shutdown: %v", err)
+		}
+		
+		log.Println("✅ Graceful shutdown complete")
+		os.Exit(0)
+	}()
 
 	if err := app.Listen(":" + port); err != nil {
 		log.Fatal("Failed to start server:", err)

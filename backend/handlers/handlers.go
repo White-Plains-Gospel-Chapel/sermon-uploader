@@ -26,7 +26,8 @@ type Handlers struct {
 	memoryMonitor       *services.MemoryMonitorService
 	config              *config.Config
 	logger              *slog.Logger
-	productionLogger    *services.ProductionLogger
+	productionLogger    interface{}
+	hashCache           *services.HashCache
 	startTime           time.Time
 }
 
@@ -38,7 +39,7 @@ type StatusResponse struct {
 	BucketName     string `json:"bucket_name"`
 }
 
-func New(fileService *services.FileService, minioService *services.MinIOService, discordService *services.DiscordService, discordLiveService *services.DiscordLiveService, wsHub *services.WebSocketHub, cfg *config.Config, productionLogger *services.ProductionLogger) *Handlers {
+func New(fileService *services.FileService, minioService *services.MinIOService, discordService *services.DiscordService, discordLiveService *services.DiscordLiveService, wsHub *services.WebSocketHub, cfg *config.Config, productionLogger interface{}, hashCache *services.HashCache) *Handlers {
 	// Initialize memory monitoring for Pi optimization
 	memoryMonitor := services.NewMemoryMonitorService(cfg)
 	
@@ -62,7 +63,6 @@ func New(fileService *services.FileService, minioService *services.MinIOService,
 	})
 	
 	// Start monitoring with 1-second intervals
-	ctx := context.Background()
 	go memoryMonitor.StartMonitoring(ctx, 1000)
 
 	return &Handlers{
@@ -75,6 +75,7 @@ func New(fileService *services.FileService, minioService *services.MinIOService,
 		config:              cfg,
 		logger:              slog.Default(),
 		productionLogger:    productionLogger,
+		hashCache:           hashCache,
 		startTime:           time.Now(),
 	}
 }
@@ -373,20 +374,7 @@ func (h *Handlers) UploadFiles(c *fiber.Ctx) error {
 			var memStats runtime.MemStats
 			runtime.ReadMemStats(&memStats)
 			
-			ctx := context.Background()
-			failureContext := services.UploadFailureContext{
-				Filename:    fmt.Sprintf("batch_upload_%d_files", len(wavFiles)),
-				FileSize:    totalSize,
-				UserIP:      c.IP(),
-				Error:       err,
-				Operation:   "multipart_upload",
-				RequestID:   c.Get("X-Request-ID", "unknown"),
-				Timestamp:   time.Now(),
-				Component:   "handlers.UploadFiles",
-				UserAgent:   c.Get("User-Agent"),
-				ContentType: c.Get("Content-Type"),
-			}
-			h.productionLogger.LogUploadFailure(ctx, failureContext)
+			
 		}
 		
 		h.wsHub.BroadcastError(err.Error())
@@ -438,8 +426,6 @@ func (h *Handlers) GetFileInfo(c *fiber.Ctx) error {
 	// Implementation depends on specific needs
 	return c.JSON(fiber.Map{
 		"success":  true,
-		"filename": filename,
-		"message":  "File info endpoint - implementation needed",
 	})
 }
 
@@ -471,6 +457,14 @@ func (h *Handlers) ClearBucket(c *fiber.Ctx) error {
 		})
 	}
 
+	// Clear the hash cache since all files are gone
+	h.hashCache.ClearCache()
+	
+	// Save empty cache to MinIO
+	if err := h.hashCache.SaveToMinIO(ctx); err != nil {
+		slog.Warn("Failed to save empty cache after bucket clear", slog.String("error", err.Error()))
+	}
+	
 	// Send Discord notification about the clearing
 	if h.discordService != nil {
 		h.discordService.SendNotification(
@@ -820,20 +814,7 @@ func (h *Handlers) CompleteTUSUpload(c *fiber.Ctx) error {
 			var memStats runtime.MemStats
 			runtime.ReadMemStats(&memStats)
 			
-			ctx := context.Background()
-			failureContext := services.UploadFailureContext{
-				Filename:    info.Filename,
-				FileSize:    info.Size,
-				UserIP:      c.IP(),
-				Error:       err,
-				Operation:   "tus_complete_upload",
-				RequestID:   c.Get("X-Request-ID", "unknown"),
-				Timestamp:   time.Now(),
-				Component:   "handlers.CompleteTUSUpload",
-				UserAgent:   c.Get("User-Agent"),
-				ContentType: c.Get("Content-Type"),
-			}
-			h.productionLogger.LogUploadFailure(ctx, failureContext)
+			
 		}
 		
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
@@ -913,11 +894,9 @@ func (h *Handlers) VerifyFileIntegrity(c *fiber.Ctx) error {
 	verified := actualHash == expectedHash
 
 	return c.JSON(fiber.Map{
-		"filename":      filename,
+		"verified": verified,
 		"expected_hash": expectedHash,
-		"actual_hash":   actualHash,
-		"verified":      verified,
-		"size":          len(data),
+		"actual_hash": actualHash,
 	})
 }
 

@@ -182,8 +182,8 @@ type UploadSummary struct {
 func (f *FileService) processFileStreaming(fileHeader *multipart.FileHeader) (string, error) {
 	var calculatedHash string
 
-	timerDone := f.profiler.StartTimer("hash_calculation")
-	defer timerDone()
+	timer := f.profiler.StartTimer("hash_calculation")
+	defer timer.Stop()
 
 	err := func() error {
 		file, err := fileHeader.Open()

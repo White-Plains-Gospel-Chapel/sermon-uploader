@@ -13,8 +13,8 @@ import (
 func (f *FileService) ProcessFilesOptimized(files []*multipart.FileHeader) (*UploadSummary, error) {
 	var summary *UploadSummary
 
-	timerDone := f.profiler.StartTimer("optimized_file_processing")
-	defer timerDone()
+	timer := f.profiler.StartTimer("optimized_file_processing")
+	defer timer.Stop()
 
 	err := func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
