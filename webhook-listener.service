@@ -1,0 +1,17 @@
+[Unit]
+Description=Sermon Uploader Webhook Listener
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/opt/sermon-uploader
+ExecStart=/usr/bin/python3 /opt/sermon-uploader/pi-webhook-listener.py
+Restart=always
+RestartSec=10
+Environment="WEBHOOK_SECRET=your-webhook-secret-here"
+Environment="DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/1411012857985892412/dMzxtUtXiOCvFR0w8IuzL8mGYwZqFXuwGucT3CnBNjnXgkVxcWPLk5Vlm9lwh72YWP38"
+
+[Install]
+WantedBy=multi-user.target
