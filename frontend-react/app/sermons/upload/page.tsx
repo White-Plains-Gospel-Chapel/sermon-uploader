@@ -24,6 +24,7 @@ export default function SermonUploadPage() {
 
   const handleUpload = async () => {
     setUploading(true)
+    console.log('Starting upload for', files.length, 'files')
     
     for (const file of files) {
       const formData = new FormData()
@@ -35,6 +36,7 @@ export default function SermonUploadPage() {
         xhr.upload.addEventListener('progress', (e) => {
           if (e.lengthComputable) {
             const percentComplete = (e.loaded / e.total) * 100
+            console.log(`Upload progress for ${file.name}: ${percentComplete.toFixed(2)}%`)
             setUploadProgress(prev => ({
               ...prev,
               [file.name]: percentComplete
@@ -43,14 +45,30 @@ export default function SermonUploadPage() {
         })
         
         xhr.onload = () => {
+          console.log(`Upload response for ${file.name}: Status ${xhr.status}`, xhr.responseText)
           if (xhr.status === 200) {
-            console.log(`Upload successful: ${file.name}`)
+            console.log(`✅ Upload successful: ${file.name}`)
+            alert(`✅ Upload successful: ${file.name}`)
+          } else {
+            console.error(`❌ Upload failed for ${file.name}: Status ${xhr.status}`)
+            alert(`❌ Upload failed for ${file.name}: ${xhr.responseText}`)
           }
         }
         
-        // Use the new API route structure
-        const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-        xhr.open('POST', `${apiUrl}/api/uploads/sermon`)
+        xhr.onerror = () => {
+          console.error(`❌ Network error uploading ${file.name}`)
+          alert(`❌ Network error uploading ${file.name}`)
+        }
+        
+        // Use the correct API URL - either from env or direct to backend
+        const apiUrl = typeof window !== 'undefined' && window.location.hostname === 'admin.wpgc.church' 
+          ? 'http://api.wpgc.church' 
+          : (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000')
+        
+        const uploadUrl = `${apiUrl}/api/uploads/sermon`
+        console.log(`Uploading ${file.name} to: ${uploadUrl}`)
+        
+        xhr.open('POST', uploadUrl)
         xhr.send(formData)
         
       } catch (error) {

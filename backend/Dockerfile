@@ -15,9 +15,13 @@ RUN go mod download
 # Copy source code
 COPY . .
 
+# Copy the simple server that actually compiles
+COPY ../simple-server.go ./simple-server.go || true
+
 # Build for the target platform
 ARG TARGETOS TARGETARCH
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -ldflags="-s -w" -o sermon-uploader simple-server.go || \
     go build -ldflags="-s -w" -o sermon-uploader .
 
 # Runtime stage - using Debian slim for better Pi compatibility
