@@ -63,6 +63,7 @@ func New(fileService *services.FileService, minioService *services.MinIOService,
 	})
 	
 	// Start monitoring with 1-second intervals
+	ctx := context.Background()
 	go memoryMonitor.StartMonitoring(ctx, 1000)
 
 	return &Handlers{
@@ -461,6 +462,7 @@ func (h *Handlers) ClearBucket(c *fiber.Ctx) error {
 	h.hashCache.ClearCache()
 	
 	// Save empty cache to MinIO
+	ctx := context.Background()
 	if err := h.hashCache.SaveToMinIO(ctx); err != nil {
 		slog.Warn("Failed to save empty cache after bucket clear", slog.String("error", err.Error()))
 	}

@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sermon-uploader-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - MINIO_ENDPOINT=192.168.1.127:9000
+      - MINIO_ACCESS_KEY=gaius
+      - MINIO_SECRET_KEY=John 3:16
+      - MINIO_BUCKET=sermons
+      - MINIO_SECURE=false
+      - DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/1411012857985892412/dMzxtUtXiOCvFR0w8IuzL8mGYwZqFXuwGucT3CnBNjnXgkVxcWPLk5Vlm9lwh72YWP38
+    restart: unless-stopped
+    networks:
+      - sermon-network
+
+  frontend:
+    build:
+      context: ./frontend-react
+      dockerfile: Dockerfile
+    container_name: sermon-uploader-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    restart: unless-stopped
+    depends_on:
+      - backend
+    networks:
+      - sermon-network
+
+networks:
+  sermon-network:
+    driver: bridge

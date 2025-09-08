@@ -4,29 +4,45 @@ All endpoints are accessible globally via `https://api.wpgc.church`
 
 ## 🚨 Admin Endpoints (Use with Caution)
 
-### Clear Bucket - Delete All Files
+### Clear Bucket - Delete All Files (WITH SAFETY)
 ```bash
-DELETE https://api.wpgc.church/api/admin/clear-bucket
+DELETE https://api.wpgc.church/api/bucket/clear?confirm=yes-delete-everything
 ```
 
 **⚠️ WARNING**: This deletes ALL files from the storage bucket!
+**🔒 SAFETY**: Requires exact confirmation parameter to prevent accidental deletion
 
 #### Example Request (from anywhere in the world):
 ```bash
-# Using curl
-curl -X DELETE https://api.wpgc.church/api/admin/clear-bucket
+# Using curl (MUST include confirmation parameter)
+curl -X DELETE "https://api.wpgc.church/api/bucket/clear?confirm=yes-delete-everything"
+
+# Without confirmation (will be rejected)
+curl -X DELETE "https://api.wpgc.church/api/bucket/clear"
 
 # Using Postman
 Method: DELETE
-URL: https://api.wpgc.church/api/admin/clear-bucket
+URL: https://api.wpgc.church/api/bucket/clear
+Query Params: 
+  - confirm: yes-delete-everything
 ```
 
-#### Response:
+#### Response (Success):
 ```json
 {
   "success": true,
+  "message": "Bucket cleared successfully",
   "files_deleted": 15,
   "space_freed": "2.3GB"
+}
+```
+
+#### Response (No Confirmation):
+```json
+{
+  "success": false,
+  "message": "This operation requires confirmation. Add ?confirm=yes-delete-everything to proceed.",
+  "warning": "This will permanently delete ALL files in the bucket!"
 }
 ```
 
@@ -120,8 +136,8 @@ All endpoints work from:
 # Test from anywhere
 curl https://api.wpgc.church/api/health
 
-# Clear bucket (DANGER!)
-curl -X DELETE https://api.wpgc.church/api/admin/clear-bucket
+# Clear bucket (DANGER! - requires confirmation)
+curl -X DELETE "https://api.wpgc.church/api/bucket/clear?confirm=yes-delete-everything"
 
 # Upload file
 curl -X POST -F "file=@sermon.wav" https://api.wpgc.church/api/uploads/sermon

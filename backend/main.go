@@ -145,6 +145,7 @@ func main() {
 				"http://localhost:3000",            // Local admin dashboard
 				"http://localhost:3001",            // Local public website
 				"http://localhost:8000",            // Local API backend
+			}
 			
 			for _, allowed := range allowedOrigins {
 				if origin == allowed {
@@ -297,7 +298,9 @@ func main() {
 				return c.JSON(health)
 			})
 			maintenance.Post("/cleanup/expired", h.CleanupExpiredUploads)
-			maintenance.Delete("/bucket/clear", h.ClearBucket)
+			// Clear bucket with confirmation parameter
+			// Usage: DELETE /api/bucket/clear?confirm=yes-delete-everything
+			api.Delete("/bucket/clear", h.ClearBucket)
 			maintenance.Post("/migrate/minio", h.MigrateMinIO)
 		}
 		
