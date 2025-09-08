@@ -43,7 +43,7 @@ jobs:
         uses: actions/cache@v3
         with:
           path: ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          key: ${{ runner.os }}-go-${{ hashFiles('backend/go.sum') }}
           restore-keys: |
             ${{ runner.os }}-go-
 
@@ -108,7 +108,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: frontend-build
-          path: frontend-react/build/
+          path: frontend-react/.next/
 
   # Job 3: Build Docker Images
   build-docker:
