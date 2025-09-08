@@ -88,39 +88,71 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Trigger deployment on Pi
+      - name: Setup SSH
+        if: ${{ secrets.PI_SSH_KEY != '' }}
         run: |
-          # Option 1: SSH deployment (requires SSH key setup)
-          # Uncomment and configure if you have SSH access set up
-          # ssh -o StrictHostKeyChecking=no pi@192.168.1.127 << 'EOF'
-          #   cd /opt/sermon-uploader
-          #   git pull origin master
-          #   docker compose -f docker-compose.pi5.yml pull
-          #   docker compose -f docker-compose.pi5.yml up -d
-          # EOF
+          mkdir -p ~/.ssh
+          echo "${{ secrets.PI_SSH_KEY }}" > ~/.ssh/pi_key
+          chmod 600 ~/.ssh/pi_key
+          echo "Host pi" >> ~/.ssh/config
+          echo "  HostName 192.168.1.127" >> ~/.ssh/config
+          echo "  User pi" >> ~/.ssh/config
+          echo "  IdentityFile ~/.ssh/pi_key" >> ~/.ssh/config
+          echo "  StrictHostKeyChecking no" >> ~/.ssh/config
 
-          # Option 2: Webhook trigger (requires webhook listener on Pi)
-          # This sends a webhook to trigger deployment
-          if [ -n "${{ secrets.PI_WEBHOOK_URL }}" ]; then
-            curl -X POST ${{ secrets.PI_WEBHOOK_URL }} \
-              -H "Content-Type: application/json" \
-              -H "X-GitHub-Event: deployment" \
-              -d '{
-                "action": "deploy",
-                "repository": "${{ github.repository }}",
-                "sha": "${{ github.sha }}",
-                "ref": "${{ github.ref }}",
-                "images": {
-                  "backend": "${{ env.REGISTRY }}/${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_PREFIX }}-backend:pi5",
-                  "frontend": "${{ env.REGISTRY }}/${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_PREFIX }}-frontend:pi5"
-                }
-              }'
-          else
-            echo "⚠️ PI_WEBHOOK_URL not configured. Skipping Pi deployment trigger."
-            echo "Images are available on Docker Hub. Deploy manually on Pi using:"
-            echo "  docker compose -f docker-compose.pi5.yml pull"
-            echo "  docker compose -f docker-compose.pi5.yml up -d"
-          fi
+      - name: Deploy to Pi via SSH
+        if: ${{ secrets.PI_SSH_KEY != '' }}
+        run: |
+          ssh pi << 'EOF'
+            echo "🚀 Starting deployment on Raspberry Pi..."
+            cd /opt/sermon-uploader
+            
+            echo "📥 Pulling latest code..."
+            git pull origin master
+            
+            echo "📦 Pulling Docker images from Docker Hub..."
+            docker compose -f docker-compose.pi5.yml pull
+            
+            echo "🔄 Restarting services..."
+            docker compose -f docker-compose.pi5.yml down
+            docker compose -f docker-compose.pi5.yml up -d
+            
+            echo "🧹 Cleaning up old images..."
+            docker image prune -f
+            
+            echo "✅ Deployment complete!"
+            docker ps
+          EOF
+
+      - name: Fallback - Webhook deployment
+        if: ${{ secrets.PI_SSH_KEY == '' && secrets.PI_WEBHOOK_URL != '' }}
+        run: |
+          curl -X POST ${{ secrets.PI_WEBHOOK_URL }} \
+            -H "Content-Type: application/json" \
+            -H "X-GitHub-Event: deployment" \
+            -d '{
+              "action": "deploy",
+              "repository": "${{ github.repository }}",
+              "sha": "${{ github.sha }}",
+              "ref": "${{ github.ref }}",
+              "images": {
+                "backend": "${{ env.REGISTRY }}/${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_PREFIX }}-backend:pi5",
+                "frontend": "${{ env.REGISTRY }}/${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_PREFIX }}-frontend:pi5"
+              }
+            }'
+
+      - name: Manual deployment instructions
+        if: ${{ secrets.PI_SSH_KEY == '' && secrets.PI_WEBHOOK_URL == '' }}
+        run: |
+          echo "⚠️ Automatic deployment not configured."
+          echo ""
+          echo "To enable automatic deployment, add one of these to GitHub Secrets:"
+          echo "1. PI_SSH_KEY - SSH private key for Pi access"
+          echo "2. PI_WEBHOOK_URL - Webhook URL for deployment trigger"
+          echo ""
+          echo "Images are available on Docker Hub. Deploy manually on Pi:"
+          echo "  docker compose -f docker-compose.pi5.yml pull"
+          echo "  docker compose -f docker-compose.pi5.yml up -d"
 
       - name: Notify Discord
         if: always()
