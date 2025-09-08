@@ -27,9 +27,9 @@ RUN apt-get update && \
 
 # Copy built application
 COPY --from=builder /app/.next ./.next
-COPY --from=builder /app/public ./public
+COPY --from=builder /app/public* ./public/
 COPY --from=builder /app/package*.json ./
-COPY --from=builder /app/next.config.js ./
+COPY --from=builder /app/next.config.js* ./
 
 # Install production dependencies only
 RUN npm ci --production --no-audit --no-fund && \
