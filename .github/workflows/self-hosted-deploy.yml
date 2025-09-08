@@ -77,28 +77,28 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: frontend-react/package-lock.json
 
       - name: 📦 Install dependencies
-        working-directory: ./frontend
+        working-directory: ./frontend-react
         run: npm ci
 
       - name: 🎨 Run linting
-        working-directory: ./frontend
+        working-directory: ./frontend-react
         run: |
           echo "Running ESLint..."
           npm run lint || true
           echo "✅ Linting complete!"
 
       - name: 🧪 Run frontend tests
-        working-directory: ./frontend
+        working-directory: ./frontend-react
         run: |
           echo "Running frontend tests..."
           npm test -- --coverage --watchAll=false || true
           echo "✅ Frontend tests complete!"
 
       - name: 🏗️ Build frontend
-        working-directory: ./frontend
+        working-directory: ./frontend-react
         run: |
           echo "Building frontend..."
           npm run build
@@ -108,7 +108,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: frontend-build
-          path: frontend/build/
+          path: frontend-react/build/
 
   # Job 3: Build Docker Images
   build-docker:
@@ -169,7 +169,7 @@ jobs:
       - name: 🐳 Build and push frontend Docker image
         uses: docker/build-push-action@v5
         with:
-          context: ./frontend
+          context: ./frontend-react
           platforms: linux/arm64,linux/amd64
           push: true
           tags: ${{ steps.meta-frontend.outputs.tags }}
