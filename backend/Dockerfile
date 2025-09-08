@@ -17,10 +17,7 @@ COPY . .
 
 # Build for the target platform
 ARG TARGETOS TARGETARCH
-# Try building simple-server first, fall back to main if it fails
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -ldflags="-s -w" -o sermon-uploader simple-server.go || \
-    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -ldflags="-s -w" -o sermon-uploader .
 
 # Runtime stage - using Debian slim for better Pi compatibility

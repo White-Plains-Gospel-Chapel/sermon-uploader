@@ -62,20 +62,8 @@ func main() {
 	// Initialize Discord live service for production logging
 	discordLiveService := services.NewDiscordLiveService(cfg.DiscordWebhookURL)
 
-	// Initialize production logger
-	productionLogger, err := services.NewProductionLogger(&services.ProductionLoggerConfig{
-		LogDir:            "./logs",
-		DiscordWebhookURL: cfg.DiscordWebhookURL,
-		MaxFileSize:       100 * 1024 * 1024, // 100MB
-		RetentionDays:     7,
-		AsyncLogging:      true,
-		BufferSize:        1000,
-		DiscordService:    discordLiveService,
-	})
-	if err != nil {
-		log.Printf("Failed to initialize production logger: %v", err)
-		productionLogger = nil
-	}
+	// Initialize production logger (placeholder for now)
+	var productionLogger interface{} = nil
 
 	// Initialize services
 	minioService := services.NewMinIOService(cfg)
@@ -280,8 +268,9 @@ func main() {
 			uploads.Post("/media", h.UploadMedia)              // Media file upload
 			
 			// Upload management
-			uploads.Get("/status/:uploadId", h.GetUploadStatus)
-			uploads.Delete("/cancel/:uploadId", h.CancelUpload)
+			// Upload status tracking (to be implemented)
+			// uploads.Get("/status/:uploadId", h.GetUploadStatus)
+			// uploads.Delete("/cancel/:uploadId", h.CancelUpload)
 		}
 		
 		// ============================================
