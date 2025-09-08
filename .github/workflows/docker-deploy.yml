@@ -89,7 +89,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup SSH
-        if: ${{ secrets.PI_SSH_KEY != '' }}
+        env:
+          PI_SSH_KEY: ${{ secrets.PI_SSH_KEY }}
+        if: env.PI_SSH_KEY != ''
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.PI_SSH_KEY }}" > ~/.ssh/pi_key
@@ -101,7 +103,9 @@ jobs:
           echo "  StrictHostKeyChecking no" >> ~/.ssh/config
 
       - name: Deploy to Pi via SSH
-        if: ${{ secrets.PI_SSH_KEY != '' }}
+        env:
+          PI_SSH_KEY: ${{ secrets.PI_SSH_KEY }}
+        if: env.PI_SSH_KEY != ''
         run: |
           ssh pi << 'EOF'
             set -e
@@ -147,7 +151,10 @@ jobs:
           EOF
 
       - name: Fallback - Webhook deployment
-        if: ${{ secrets.PI_SSH_KEY == '' && secrets.PI_WEBHOOK_URL != '' }}
+        env:
+          PI_SSH_KEY: ${{ secrets.PI_SSH_KEY }}
+          PI_WEBHOOK_URL: ${{ secrets.PI_WEBHOOK_URL }}
+        if: env.PI_SSH_KEY == '' && env.PI_WEBHOOK_URL != ''
         run: |
           curl -X POST ${{ secrets.PI_WEBHOOK_URL }} \
             -H "Content-Type: application/json" \
@@ -164,7 +171,10 @@ jobs:
             }'
 
       - name: Manual deployment instructions
-        if: ${{ secrets.PI_SSH_KEY == '' && secrets.PI_WEBHOOK_URL == '' }}
+        env:
+          PI_SSH_KEY: ${{ secrets.PI_SSH_KEY }}
+          PI_WEBHOOK_URL: ${{ secrets.PI_WEBHOOK_URL }}
+        if: env.PI_SSH_KEY == '' && env.PI_WEBHOOK_URL == ''
         run: |
           echo "⚠️ Automatic deployment not configured."
           echo ""
