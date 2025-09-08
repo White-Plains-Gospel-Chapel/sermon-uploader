@@ -240,6 +240,22 @@ jobs:
             echo "Using smart deployment with automatic conflict resolution..."
             chmod +x scripts/smart-deploy-replace.sh
             ./scripts/smart-deploy-replace.sh docker-compose.pi5.yml --auto
+            EXIT_CODE=$?
+            
+            if [ $EXIT_CODE -eq 2 ]; then
+              echo "✅ External MinIO detected and configured - continuing with deployment"
+              # Use the external MinIO configuration
+              if [ -f docker-compose.external-minio.yml ]; then
+                echo "Deploying with external MinIO configuration..."
+                docker compose -f docker-compose.external-minio.yml up -d
+              else
+                echo "ERROR: External MinIO config not created"
+                exit 1
+              fi
+            elif [ $EXIT_CODE -ne 0 ]; then
+              echo "❌ Deployment failed with exit code $EXIT_CODE"
+              exit $EXIT_CODE
+            fi
           elif [ -f scripts/smart-deploy.sh ]; then
             echo "Using older smart deployment script..."
             chmod +x scripts/smart-deploy.sh
