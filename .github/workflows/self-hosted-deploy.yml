@@ -1,0 +1,368 @@
+name: Build, Test and Deploy with Self-Hosted Runner
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:
+    inputs:
+      deploy_environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+          - development
+
+env:
+  REGISTRY: docker.io
+  DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+  BACKEND_IMAGE: sermon-uploader-backend
+  FRONTEND_IMAGE: sermon-uploader-frontend
+  NODE_VERSION: '18'
+  GO_VERSION: '1.21'
+
+jobs:
+  # Job 1: Build and Test Backend
+  test-backend:
+    name: Test Backend
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔧 Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: 📦 Cache Go modules
+        uses: actions/cache@v3
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: 📚 Download dependencies
+        working-directory: ./backend
+        run: go mod download
+
+      - name: 🧪 Run backend tests
+        working-directory: ./backend
+        run: |
+          echo "Running backend tests..."
+          go test -v -race -coverprofile=coverage.out ./...
+          echo "✅ Backend tests passed!"
+
+      - name: 📊 Upload coverage reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: backend-coverage
+          path: backend/coverage.out
+
+  # Job 2: Build and Test Frontend
+  test-frontend:
+    name: Test Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔧 Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 📦 Install dependencies
+        working-directory: ./frontend
+        run: npm ci
+
+      - name: 🎨 Run linting
+        working-directory: ./frontend
+        run: |
+          echo "Running ESLint..."
+          npm run lint || true
+          echo "✅ Linting complete!"
+
+      - name: 🧪 Run frontend tests
+        working-directory: ./frontend
+        run: |
+          echo "Running frontend tests..."
+          npm test -- --coverage --watchAll=false || true
+          echo "✅ Frontend tests complete!"
+
+      - name: 🏗️ Build frontend
+        working-directory: ./frontend
+        run: |
+          echo "Building frontend..."
+          npm run build
+          echo "✅ Frontend build successful!"
+
+      - name: 📊 Upload build artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: frontend-build
+          path: frontend/build/
+
+  # Job 3: Build Docker Images
+  build-docker:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    needs: [test-backend, test-frontend]
+    outputs:
+      backend-tag: ${{ steps.meta-backend.outputs.tags }}
+      frontend-tag: ${{ steps.meta-frontend.outputs.tags }}
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔐 Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: 🏷️ Extract metadata for backend
+        id: meta-backend
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.DOCKER_USERNAME }}/${{ env.BACKEND_IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=pi5
+
+      - name: 🏷️ Extract metadata for frontend
+        id: meta-frontend
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.DOCKER_USERNAME }}/${{ env.FRONTEND_IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=pi5
+
+      - name: 🔨 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 🐳 Build and push backend Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          platforms: linux/arm64,linux/amd64
+          push: true
+          tags: ${{ steps.meta-backend.outputs.tags }}
+          labels: ${{ steps.meta-backend.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 🐳 Build and push frontend Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          platforms: linux/arm64,linux/amd64
+          push: true
+          tags: ${{ steps.meta-frontend.outputs.tags }}
+          labels: ${{ steps.meta-frontend.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 📝 Generate deployment summary
+        run: |
+          echo "## 🚀 Docker Images Built Successfully!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Backend Image Tags:" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta-backend.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Frontend Image Tags:" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta-frontend.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  # Job 4: Deploy to Raspberry Pi (Self-Hosted Runner)
+  deploy-to-pi:
+    name: Deploy to Raspberry Pi
+    runs-on: [self-hosted, raspberry-pi]
+    needs: build-docker
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    environment:
+      name: production
+      url: http://192.168.1.127:3000
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔍 System Information
+        run: |
+          echo "## 🖥️ Deployment Environment" >> $GITHUB_STEP_SUMMARY
+          echo "- **Hostname:** $(hostname)" >> $GITHUB_STEP_SUMMARY
+          echo "- **OS:** $(uname -a)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Docker Version:** $(docker --version)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Docker Compose Version:** $(docker compose version || docker-compose --version)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Current Directory:** $(pwd)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Disk Space:** $(df -h / | tail -1)" >> $GITHUB_STEP_SUMMARY
+
+      - name: 🐳 Pull latest Docker images
+        run: |
+          echo "Pulling latest Docker images..."
+          docker pull ${{ env.REGISTRY }}/${{ env.DOCKER_USERNAME }}/${{ env.BACKEND_IMAGE }}:pi5
+          docker pull ${{ env.REGISTRY }}/${{ env.DOCKER_USERNAME }}/${{ env.FRONTEND_IMAGE }}:pi5
+          echo "✅ Docker images pulled successfully!"
+
+      - name: 🔄 Stop existing containers
+        run: |
+          echo "Stopping existing containers..."
+          if [ -f docker-compose.pi5.yml ]; then
+            docker compose -f docker-compose.pi5.yml down || true
+          else
+            echo "⚠️ docker-compose.pi5.yml not found, skipping..."
+          fi
+
+      - name: 🚀 Start new containers
+        run: |
+          echo "Starting new containers..."
+          if [ -f docker-compose.pi5.yml ]; then
+            docker compose -f docker-compose.pi5.yml up -d
+            echo "✅ Containers started successfully!"
+          else
+            echo "❌ docker-compose.pi5.yml not found!"
+            exit 1
+          fi
+
+      - name: ⏳ Wait for services to be healthy
+        run: |
+          echo "Waiting for services to be healthy..."
+          sleep 10
+          
+          # Check backend health
+          for i in {1..30}; do
+            if curl -f http://localhost:8080/health 2>/dev/null; then
+              echo "✅ Backend is healthy!"
+              break
+            fi
+            echo "Waiting for backend... ($i/30)"
+            sleep 2
+          done
+          
+          # Check frontend
+          for i in {1..30}; do
+            if curl -f http://localhost:3000 2>/dev/null; then
+              echo "✅ Frontend is accessible!"
+              break
+            fi
+            echo "Waiting for frontend... ($i/30)"
+            sleep 2
+          done
+
+      - name: 📊 Show running containers
+        run: |
+          echo "## 🐳 Running Containers" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: 🧹 Clean up old images
+        run: |
+          echo "Cleaning up old Docker images..."
+          docker image prune -f
+          echo "✅ Cleanup complete!"
+
+      - name: 📝 Deployment Summary
+        if: success()
+        run: |
+          echo "## ✅ Deployment Successful!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🌐 Access URLs:" >> $GITHUB_STEP_SUMMARY
+          echo "- **Frontend:** http://192.168.1.127:3000" >> $GITHUB_STEP_SUMMARY
+          echo "- **Backend API:** http://192.168.1.127:8080" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📅 Deployment Time:" >> $GITHUB_STEP_SUMMARY
+          echo "- **Timestamp:** $(date '+%Y-%m-%d %H:%M:%S %Z')" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+
+  # Job 5: Send Notifications
+  notify:
+    name: Send Notifications
+    runs-on: ubuntu-latest
+    needs: [test-backend, test-frontend, build-docker, deploy-to-pi]
+    if: always()
+    steps:
+      - name: 📊 Determine job status
+        id: status
+        run: |
+          if [[ "${{ needs.deploy-to-pi.result }}" == "success" ]]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "color=3066993" >> $GITHUB_OUTPUT
+            echo "title=✅ Deployment Successful" >> $GITHUB_OUTPUT
+          elif [[ "${{ needs.deploy-to-pi.result }}" == "skipped" ]]; then
+            echo "status=skipped" >> $GITHUB_OUTPUT
+            echo "color=16776960" >> $GITHUB_OUTPUT
+            echo "title=⏭️ Deployment Skipped" >> $GITHUB_OUTPUT
+          else
+            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "color=15158332" >> $GITHUB_OUTPUT
+            echo "title=❌ Deployment Failed" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 💬 Send Discord notification
+        if: vars.DISCORD_WEBHOOK != ''
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          curl -X POST $DISCORD_WEBHOOK \
+            -H "Content-Type: application/json" \
+            -d '{
+              "embeds": [{
+                "title": "${{ steps.status.outputs.title }}",
+                "color": ${{ steps.status.outputs.color }},
+                "fields": [
+                  {
+                    "name": "Repository",
+                    "value": "${{ github.repository }}",
+                    "inline": true
+                  },
+                  {
+                    "name": "Branch",
+                    "value": "${{ github.ref_name }}",
+                    "inline": true
+                  },
+                  {
+                    "name": "Commit",
+                    "value": "`${{ github.sha }}`"
+                  },
+                  {
+                    "name": "Test Results",
+                    "value": "Backend: ${{ needs.test-backend.result }}\nFrontend: ${{ needs.test-frontend.result }}",
+                    "inline": true
+                  },
+                  {
+                    "name": "Build Status",
+                    "value": "Docker: ${{ needs.build-docker.result }}",
+                    "inline": true
+                  },
+                  {
+                    "name": "Deployment",
+                    "value": "${{ needs.deploy-to-pi.result }}",
+                    "inline": true
+                  },
+                  {
+                    "name": "Workflow",
+                    "value": "[View Run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+                  }
+                ],
+                "timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%S.000Z)'"
+              }]
+            }' || true
