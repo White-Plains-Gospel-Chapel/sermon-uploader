@@ -19,8 +19,6 @@ services:
       # This will create the directory if it doesn't exist
       - /opt/minio-data:/data
     restart: unless-stopped
-    networks:
-      - sermon-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 30s
@@ -77,21 +75,12 @@ services:
     depends_on:
       backend:
         condition: service_healthy
-    networks:
-      - sermon-network
     deploy:
       resources:
         limits:
           memory: 1G
         reservations:
           memory: 512M
-
-networks:
-  sermon-network:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16
 
 volumes:
   minio_data:
