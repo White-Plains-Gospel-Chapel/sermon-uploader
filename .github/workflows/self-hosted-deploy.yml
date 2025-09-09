@@ -241,7 +241,15 @@ jobs:
         run: |
           echo "Starting all containers including MinIO..."
           
-          # Simple deployment - everything is containerized now
+          # Check if system MinIO is still running and stop it
+          if lsof -i :9000 | grep -q minio; then
+            echo "⚠️ System MinIO detected on port 9000, stopping it..."
+            sudo systemctl stop minio 2>/dev/null || sudo pkill minio || true
+            echo "✅ System MinIO stopped"
+            sleep 2
+          fi
+          
+          # Start containerized services
           docker compose -f docker-compose.pi5.yml up -d
           
           # Check if deployment succeeded
