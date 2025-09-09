@@ -15,9 +15,9 @@ services:
       - MINIO_BROWSER_REDIRECT_URL=http://192.168.1.127:9001
     command: server /data --console-address ":9001"
     volumes:
-      # Direct mount to SSD for best performance
-      # Change this path if your SSD is mounted elsewhere
-      - /mnt/ssd/minio-data:/data
+      # Direct mount to host for best performance
+      # This will create the directory if it doesn't exist
+      - /opt/minio-data:/data
     restart: unless-stopped
     networks:
       - sermon-network

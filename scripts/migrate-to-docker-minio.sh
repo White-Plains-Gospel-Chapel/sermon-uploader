@@ -18,8 +18,7 @@ echo -e "${BLUE}╚════════════════════�
 echo ""
 
 # Configuration
-SSD_MOUNT="/mnt/ssd"
-NEW_MINIO_DATA="$SSD_MOUNT/minio-data"
+NEW_MINIO_DATA="/opt/minio-data"  # Simple path that will work on any Pi
 OLD_MINIO_DATA="/var/lib/minio/data"  # Update this if your MinIO data is elsewhere
 
 echo -e "${YELLOW}This script will:${NC}"
@@ -63,31 +62,15 @@ else
     fi
 fi
 
-# Step 2: Check SSD mount
-echo -e "\n${BLUE}Step 2: Checking SSD mount...${NC}"
-if [ ! -d "$SSD_MOUNT" ]; then
-    echo -e "${RED}✗ SSD mount directory not found at $SSD_MOUNT${NC}"
-    echo "Please update the SSD_MOUNT variable in this script"
-    exit 1
-fi
+# Step 2: Check storage location
+echo -e "\n${BLUE}Step 2: Checking storage location...${NC}"
+echo "MinIO data will be stored at: $NEW_MINIO_DATA"
+echo "Current disk usage:"
+df -h /opt
 
-# Check if it's actually a mount point
-if mountpoint -q "$SSD_MOUNT"; then
-    echo -e "${GREEN}✓ SSD is mounted at $SSD_MOUNT${NC}"
-    df -h "$SSD_MOUNT"
-else
-    echo -e "${YELLOW}⚠ $SSD_MOUNT exists but might not be a mount point${NC}"
-    echo "Current disk usage:"
-    df -h "$SSD_MOUNT"
-    read -p "Continue anyway? (y/n): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        exit 1
-    fi
-fi
-
-# Step 3: Create MinIO data directory on SSD
+# Step 3: Create MinIO data directory
 echo -e "\n${BLUE}Step 3: Creating MinIO data directory...${NC}"
+
 if [ -d "$NEW_MINIO_DATA" ]; then
     echo -e "${YELLOW}⚠ Directory $NEW_MINIO_DATA already exists${NC}"
     ls -la "$NEW_MINIO_DATA"
