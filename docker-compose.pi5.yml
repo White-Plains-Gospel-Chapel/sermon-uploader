@@ -45,8 +45,6 @@ services:
       - MINIO_SECURE=false
       - DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/1411012857985892412/dMzxtUtXiOCvFR0w8IuzL8mGYwZqFXuwGucT3CnBNjnXgkVxcWPLk5Vlm9lwh72YWP38
     restart: unless-stopped
-    networks:
-      - sermon-network
     depends_on:
       minio:
         condition: service_healthy
