@@ -265,6 +265,16 @@ jobs:
             echo "Smart deploy scripts not found, using basic deployment..."
             docker compose -f docker-compose.pi5.yml up -d
           fi
+          
+          # Debug: Check container logs if deployment seems to have started
+          echo "Checking container status..."
+          docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.State}}"
+          
+          # Check backend logs for connection issues
+          if docker ps -a | grep -q sermon-uploader-backend; then
+            echo "Backend container logs (last 50 lines):"
+            docker logs sermon-uploader-backend --tail 50 || true
+          fi
 
       - name: ⏳ Wait for services to be healthy
         run: |

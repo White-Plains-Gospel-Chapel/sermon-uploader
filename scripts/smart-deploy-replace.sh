@@ -269,6 +269,16 @@ create_external_minio_config() {
     
     echo -e "${CYAN}Creating configuration for external MinIO...${NC}"
     
+    # Test MinIO connectivity first
+    echo -e "${BLUE}Testing MinIO connectivity at localhost:9000...${NC}"
+    if command -v nc > /dev/null 2>&1; then
+        if nc -zv localhost 9000 2>&1 | grep -q succeeded; then
+            echo -e "${GREEN}✓ MinIO is accessible on port 9000${NC}"
+        else
+            echo -e "${YELLOW}⚠ Warning: Cannot verify MinIO connectivity${NC}"
+        fi
+    fi
+    
     # Copy the original file
     cp $input_file $output_file
     
@@ -281,18 +291,44 @@ create_external_minio_config() {
     ' $input_file > $output_file.tmp && mv $output_file.tmp $output_file
     
     # Update backend environment to use host MinIO
-    sed -i.bak 's/MINIO_ENDPOINT=minio:9000/MINIO_ENDPOINT=host.docker.internal:9000/g' $output_file
+    # On Linux/Raspberry Pi, we need to use the host IP instead of host.docker.internal
+    if [[ "$OSTYPE" == "linux-gnu"* ]] || [[ "$(uname -m)" == "aarch64" ]] || [[ "$(uname -m)" == "armv"* ]]; then
+        # Try to get the host IP from the Docker bridge
+        HOST_IP=""
+        
+        # First try docker0 interface
+        if command -v ip > /dev/null 2>&1; then
+            HOST_IP=$(ip -4 addr show docker0 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' || echo "")
+        fi
+        
+        # If that fails, try to get the default gateway
+        if [ -z "$HOST_IP" ]; then
+            HOST_IP=$(ip route show default 2>/dev/null | awk '/default/ {print $3}' || echo "")
+        fi
+        
+        # Default to standard Docker bridge IP if all else fails
+        if [ -z "$HOST_IP" ]; then
+            HOST_IP="172.17.0.1"
+        fi
+        
+        echo -e "${BLUE}Using host IP: $HOST_IP for MinIO connection${NC}"
+        sed -i.bak "s/MINIO_ENDPOINT=minio:9000/MINIO_ENDPOINT=$HOST_IP:9000/g" $output_file
+    else
+        sed -i.bak 's/MINIO_ENDPOINT=minio:9000/MINIO_ENDPOINT=host.docker.internal:9000/g' $output_file
+    fi
     
-    # Add extra_hosts to backend if not present
-    if ! grep -q "extra_hosts:" $output_file; then
-        awk '
-        /^  backend:$/ { backend = 1 }
-        backend && /^    networks:$/ {
-            print "    extra_hosts:"
-            print "      - \"host.docker.internal:host-gateway\""
-        }
-        { print }
-        ' $output_file > $output_file.tmp && mv $output_file.tmp $output_file
+    # Add extra_hosts to backend if not present (only needed for non-Linux)
+    if [[ "$OSTYPE" != "linux-gnu"* ]]; then
+        if ! grep -q "extra_hosts:" $output_file; then
+            awk '
+            /^  backend:$/ { backend = 1 }
+            backend && /^    networks:$/ {
+                print "    extra_hosts:"
+                print "      - \"host.docker.internal:host-gateway\""
+            }
+            { print }
+            ' $output_file > $output_file.tmp && mv $output_file.tmp $output_file
+        fi
     fi
     
     # Remove MinIO dependency from backend - handle properly
@@ -488,6 +524,22 @@ smart_deploy_with_replacement() {
         
         # Wait for services
         echo -e "${BLUE}⏳ Waiting for services to be healthy...${NC}"
+        
+        # If using external MinIO, verify connectivity from within container
+        if [ "$use_external_minio" = true ]; then
+            echo -e "${BLUE}Verifying MinIO connectivity from backend container...${NC}"
+            sleep 3
+            
+            # Check if backend can reach MinIO
+            if docker exec sermon-uploader-backend sh -c 'nc -zv ${MINIO_ENDPOINT%:*} ${MINIO_ENDPOINT#*:} 2>&1' 2>/dev/null | grep -q succeeded; then
+                echo -e "${GREEN}✓ Backend can reach MinIO${NC}"
+            else
+                echo -e "${YELLOW}⚠ Backend may have issues reaching MinIO${NC}"
+                echo -e "${YELLOW}Checking backend logs for details...${NC}"
+                docker logs sermon-uploader-backend --tail 20 2>&1 | grep -i "minio\|s3" || true
+            fi
+        fi
+        
         sleep 5
         
         # Check backend health
