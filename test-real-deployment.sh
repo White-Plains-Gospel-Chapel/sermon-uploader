@@ -30,20 +30,14 @@ echo -e "${BLUE}═════════════════════�
 # Save current state
 ORIGINAL_CONTAINERS=$(docker ps -q)
 
-# Start a fake MinIO process on port 9000 to simulate Pi's existing MinIO
-echo -e "${CYAN}▶ Starting a process on port 9000 to simulate Pi's MinIO...${NC}"
-# Use Python to create a simple server on port 9000
-python3 -m http.server 9000 > /dev/null 2>&1 &
-FAKE_MINIO_PID=$!
-sleep 2
-
-# Verify port 9000 is now in use
+# Check if MinIO is already running, if not we'll start it
+echo -e "${CYAN}▶ Checking for MinIO on port 9000...${NC}"
 if lsof -i:9000 > /dev/null 2>&1; then
-    echo -e "  ${GREEN}✓ Port 9000 is now in use (PID: $FAKE_MINIO_PID)${NC}"
-    echo -e "  ${CYAN}This simulates MinIO already running on the Pi${NC}"
+    echo -e "  ${YELLOW}⚠ Port 9000 is already in use${NC}"
+    echo -e "  ${CYAN}Deployment will need to handle this${NC}"
 else
-    echo -e "  ${RED}✗ Failed to simulate MinIO on port 9000${NC}"
-    exit 1
+    echo -e "  ${GREEN}✓ Port 9000 is free${NC}"
+    echo -e "  ${CYAN}MinIO will be started by docker-compose${NC}"
 fi
 
 # =============================================================================
@@ -163,9 +157,7 @@ echo -e "${BLUE}═════════════════════�
 echo -e "${BLUE}CLEANUP${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
 
-# Kill our fake MinIO
-echo -e "${CYAN}▶ Stopping simulated MinIO...${NC}"
-kill $FAKE_MINIO_PID 2>/dev/null || true
+# No fake MinIO to kill anymore
 
 # Stop any containers we started
 echo -e "${CYAN}▶ Cleaning up test containers...${NC}"

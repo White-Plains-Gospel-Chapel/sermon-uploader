@@ -80,22 +80,40 @@ check_existing_minio() {
     
     # Check if curl exists before using it
     if command -v curl > /dev/null 2>&1; then
-        # Check if MinIO health endpoint responds
-        if curl -sf http://localhost:$port/minio/health/live > /dev/null 2>&1; then
-            return 0  # MinIO is running
-        fi
-    fi
-    
-    # If port 9000 is in use and we're in CI/CD, assume it's MinIO
-    if [ "$port" = "9000" ] && ([ "$CI" = "true" ] || [ "$GITHUB_ACTIONS" = "true" ]); then
-        echo -e "  ${CYAN}→ Port 9000 in use in CI environment, assuming it's MinIO${NC}"
-        return 0
+        # Try multiple MinIO health endpoints (different versions)
+        for endpoint in "/minio/health/live" "/minio/health/ready" "/"; do
+            local response=$(curl -sf -w "\n%{http_code}" http://localhost:$port$endpoint 2>/dev/null | tail -1)
+            
+            # Check if response indicates MinIO (200 OK or 403 Forbidden for root)
+            if [ "$response" = "200" ] || [ "$response" = "403" ]; then
+                # Additional check: MinIO usually returns XML or specific headers
+                local headers=$(curl -sI http://localhost:$port/ 2>/dev/null)
+                if echo "$headers" | grep -qi "x-amz-\|x-minio-\|MinIO"; then
+                    echo -e "  ${GREEN}✓ Detected MinIO service on port $port${NC}"
+                    return 0  # MinIO is running
+                fi
+            fi
+        done
     fi
     
     # Check if the process name contains "minio"
     local port_user=$(get_port_user $port)
     if [[ "$port_user" == *"minio"* ]] || [[ "$port_user" == *"MinIO"* ]]; then
+        echo -e "  ${GREEN}✓ Detected MinIO process on port $port${NC}"
         return 0  # MinIO process detected
+    fi
+    
+    # Check Docker containers for MinIO
+    local container=$(get_container_using_port $port)
+    if [ -n "$container" ] && [[ "$container" == *"minio"* ]]; then
+        echo -e "  ${GREEN}✓ Detected MinIO container on port $port${NC}"
+        return 0  # MinIO container detected
+    fi
+    
+    # If port 9000 is in use in CI/CD but NOT MinIO, return false
+    if [ "$port" = "9000" ] && ([ "$CI" = "true" ] || [ "$GITHUB_ACTIONS" = "true" ]); then
+        echo -e "  ${YELLOW}⚠ Port 9000 in use but not by MinIO - will use containerized MinIO${NC}"
+        return 1  # Force use of containerized MinIO
     fi
     
     return 1  # Not MinIO or not responding
