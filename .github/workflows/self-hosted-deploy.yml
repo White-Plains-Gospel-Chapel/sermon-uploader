@@ -237,38 +237,20 @@ jobs:
             echo "⚠️ docker-compose.pi5.yml not found, skipping..."
           fi
 
-      - name: 🚀 Start new containers with intelligent service replacement
+      - name: 🚀 Start new containers
         run: |
-          echo "Starting containers with intelligent service replacement..."
+          echo "Starting all containers including MinIO..."
           
-          # The GITHUB_ACTIONS environment variable automatically enables AUTO mode
-          if [ -f scripts/smart-deploy-replace.sh ]; then
-            echo "Using smart deployment with automatic conflict resolution..."
-            chmod +x scripts/smart-deploy-replace.sh
-            ./scripts/smart-deploy-replace.sh docker-compose.pi5.yml --auto
-            EXIT_CODE=$?
-            
-            if [ $EXIT_CODE -eq 2 ]; then
-              echo "✅ External MinIO detected and configured - continuing with deployment"
-              # Use the external MinIO configuration
-              if [ -f docker-compose.external-minio.yml ]; then
-                echo "Deploying with external MinIO configuration..."
-                docker compose -f docker-compose.external-minio.yml up -d
-              else
-                echo "ERROR: External MinIO config not created"
-                exit 1
-              fi
-            elif [ $EXIT_CODE -ne 0 ]; then
-              echo "❌ Deployment failed with exit code $EXIT_CODE"
-              exit $EXIT_CODE
-            fi
-          elif [ -f scripts/smart-deploy.sh ]; then
-            echo "Using older smart deployment script..."
-            chmod +x scripts/smart-deploy.sh
-            ./scripts/smart-deploy.sh docker-compose.pi5.yml
+          # Simple deployment - everything is containerized now
+          docker compose -f docker-compose.pi5.yml up -d
+          
+          # Check if deployment succeeded
+          if [ $? -eq 0 ]; then
+            echo "✅ All containers started successfully"
           else
-            echo "Smart deploy scripts not found, using basic deployment..."
-            docker compose -f docker-compose.pi5.yml up -d
+            echo "❌ Container deployment failed"
+            docker compose -f docker-compose.pi5.yml logs
+            exit 1
           fi
           
           # Debug: Check container logs if deployment seems to have started

@@ -10,9 +10,14 @@ services:
     environment:
       - MINIO_ROOT_USER=gaius
       - MINIO_ROOT_PASSWORD=John 3:16
+      # Performance settings for large files
+      - MINIO_API_REQUESTS_DEADLINE=60s  # Allow 60s for large file operations
+      - MINIO_BROWSER_REDIRECT_URL=http://192.168.1.127:9001
     command: server /data --console-address ":9001"
     volumes:
-      - minio_data:/data
+      # Direct mount to SSD for best performance
+      # Change this path if your SSD is mounted elsewhere
+      - /mnt/ssd/minio-data:/data
     restart: unless-stopped
     networks:
       - sermon-network
@@ -24,9 +29,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 512M
+          memory: 1G      # Max 1GB RAM for MinIO
         reservations:
-          memory: 256M
+          memory: 512M    # Guarantee 512MB minimum
 
   backend:
     image: gaiusr/sermon-uploader-backend:pi5
