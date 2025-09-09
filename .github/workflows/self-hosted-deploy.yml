@@ -43,7 +43,7 @@ jobs:
         uses: actions/cache@v3
         with:
           path: ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('backend/go.sum') }}
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
           restore-keys: |
             ${{ runner.os }}-go-
 
@@ -111,14 +111,6 @@ jobs:
             echo "⚠️ .next directory not found after build"
           fi
 
-      - name: 📊 Upload build artifacts
-        uses: actions/upload-artifact@v4
-        if: success()
-        with:
-          name: frontend-build
-          path: frontend-react/.next/
-          retention-days: 1
-          if-no-files-found: ignore
 
   # Job 3: Build Docker Images
   build-docker:

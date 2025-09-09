@@ -277,15 +277,85 @@ create_external_minio_config() {
         ' $output_file > $output_file.tmp && mv $output_file.tmp $output_file
     fi
     
-    # Remove MinIO dependency from backend
-    sed -i.bak '/depends_on:/,/minio:/ {
-        /minio:/,/condition:/ d
-    }' $output_file
+    # Remove MinIO dependency from backend - handle properly
+    # First, check if depends_on only has minio dependency
+    # If so, remove the entire depends_on section for backend
+    # Otherwise, just remove the minio entry
     
-    # Remove MinIO volume definition if no longer needed
-    sed -i.bak '/^volumes:$/,/^[a-z]*:$/ {
-        /minio_data:/ d
-    }' $output_file
+    # Use awk to properly handle the YAML structure
+    awk '
+    BEGIN { in_backend = 0; in_depends_on = 0; skip_minio = 0 }
+    
+    # Track when we are in backend service
+    /^  backend:$/ { in_backend = 1; print; next }
+    /^  [a-z]+:$/ && !/^  backend:$/ { in_backend = 0 }
+    
+    # Handle depends_on section in backend
+    in_backend && /^    depends_on:$/ {
+        in_depends_on = 1
+        # Store the line, we will decide whether to print it based on what follows
+        depends_on_line = $0
+        next
+    }
+    
+    # Handle minio dependency
+    in_backend && in_depends_on && /^      minio:$/ {
+        skip_minio = 1
+        next
+    }
+    
+    # Skip minio condition line
+    in_backend && in_depends_on && skip_minio && /^        condition: service_healthy$/ {
+        skip_minio = 0
+        next
+    }
+    
+    # Handle other dependencies (non-minio)
+    in_backend && in_depends_on && /^      [a-z]+:$/ && !/^      minio:$/ {
+        # We have other dependencies, so we need to keep depends_on section
+        if (depends_on_line) {
+            print depends_on_line
+            depends_on_line = ""
+        }
+        print
+        next
+    }
+    
+    # End of depends_on section
+    in_backend && in_depends_on && (/^    [a-z]/ && !/^      /) {
+        in_depends_on = 0
+        depends_on_line = ""
+        # Continue processing this line
+    }
+    
+    # Print all other lines
+    { print }
+    ' $output_file > $output_file.tmp && mv $output_file.tmp $output_file
+    
+    # Remove MinIO volume definition - handle properly
+    # Since minio_data is the only volume, remove the entire volumes section
+    awk '
+    BEGIN { in_volumes = 0; skip_volumes = 0 }
+    
+    /^volumes:$/ { 
+        in_volumes = 1
+        skip_volumes = 1
+        next
+    }
+    
+    # End of volumes section - detected by finding a line that starts with a letter at root level
+    in_volumes && /^[a-z]/ {
+        in_volumes = 0
+        skip_volumes = 0
+        # Continue processing this line (its a new section)
+    }
+    
+    # Skip all lines within volumes section
+    in_volumes { next }
+    
+    # Print all other lines
+    { print }
+    ' $output_file > $output_file.tmp && mv $output_file.tmp $output_file
     
     # Clean up backup files
     rm -f ${output_file}.bak
@@ -330,8 +400,11 @@ smart_deploy_with_replacement() {
     local all_ports_available=true
     
     # Check MinIO port specifically
+    # Use set +e temporarily to prevent script exit on return code 2
+    set +e
     handle_port_conflict 9000 "MinIO" $compose_file
     local minio_result=$?
+    set -e
     
     if [ $minio_result -eq 2 ]; then
         # External MinIO detected
@@ -356,8 +429,13 @@ smart_deploy_with_replacement() {
             continue
         fi
         
+        # Use set +e temporarily to prevent script exit on return code 2
+        set +e
         handle_port_conflict $port "$service" $compose_file
-        if [ $? -ne 0 ] && [ $? -ne 2 ]; then
+        local port_result=$?
+        set -e
+        
+        if [ $port_result -ne 0 ] && [ $port_result -ne 2 ]; then
             all_ports_available=false
         fi
     done
