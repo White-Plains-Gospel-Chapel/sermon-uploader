@@ -161,18 +161,22 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: ./backend
-          platforms: linux/arm64,linux/amd64
+          platforms: linux/arm64
           push: true
           tags: ${{ steps.meta-backend.outputs.tags }}
           labels: ${{ steps.meta-backend.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            CGO_ENABLED=0
+            GOOS=linux
+            GOARCH=arm64
 
       - name: 🐳 Build and push frontend Docker image
         uses: docker/build-push-action@v5
         with:
           context: ./frontend-react
-          platforms: linux/arm64,linux/amd64
+          platforms: linux/arm64
           push: true
           tags: ${{ steps.meta-frontend.outputs.tags }}
           labels: ${{ steps.meta-frontend.outputs.labels }}

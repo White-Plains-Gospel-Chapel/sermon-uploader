@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  backend:
+    image: gaiusr/sermon-uploader-backend:pi5
+    container_name: sermon-uploader-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - MINIO_ENDPOINT=host.docker.internal:9000
+      - MINIO_ACCESS_KEY=gaius
+      - MINIO_SECRET_KEY=John 3:16
+      - MINIO_BUCKET=sermons
+      - MINIO_SECURE=false
+      - DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/1411012857985892412/dMzxtUtXiOCvFR0w8IuzL8mGYwZqFXuwGucT3CnBNjnXgkVxcWPLk5Vlm9lwh72YWP38
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - sermon-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  frontend:
+    image: gaiusr/sermon-uploader-frontend:pi5
+    container_name: sermon-uploader-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NODE_ENV=production
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - sermon-network
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+
+networks:
+  sermon-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
