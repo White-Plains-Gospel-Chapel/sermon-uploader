@@ -62,7 +62,7 @@ export default function SermonUploadPage() {
         
         // Use the correct API URL - either from env or direct to backend
         const apiUrl = typeof window !== 'undefined' && window.location.hostname === 'admin.wpgc.church' 
-          ? 'http://api.wpgc.church' 
+          ? 'https://api.wpgc.church' 
           : (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000')
         
         const uploadUrl = `${apiUrl}/api/uploads/sermon`
