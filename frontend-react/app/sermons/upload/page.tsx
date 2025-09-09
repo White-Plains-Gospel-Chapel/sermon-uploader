@@ -60,9 +60,9 @@ export default function SermonUploadPage() {
           alert(`❌ Network error uploading ${file.name}`)
         }
         
-        // Use the correct API URL - either from env or direct to backend
+        // Use the correct API URL - route through the same domain to avoid CORS
         const apiUrl = typeof window !== 'undefined' && window.location.hostname === 'admin.wpgc.church' 
-          ? 'https://api.wpgc.church' 
+          ? 'https://admin.wpgc.church' 
           : (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000')
         
         const uploadUrl = `${apiUrl}/api/uploads/sermon`
